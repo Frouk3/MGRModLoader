@@ -121,6 +121,16 @@ int __cdecl hkCriFsFileLoad(int loader) // load here .usm
 	return oCriFsFileLoad(loader);
 }
 
+typedef BOOL(__thiscall* sub_9EB160)(int ecx, const char* filepath, void* filedata, size_t buffSize, int a5);
+
+static sub_9EB160 oDvdReadInit = NULL;
+
+BOOL __fastcall hkDvdReadInit(int ecx, void*, const char* filepath, void* filedata, size_t buffSize, int a5)
+{
+	
+	return oDvdReadInit(ecx, filepath, filedata, buffSize, a5);
+}
+
 size_t getFileSize(const char* file)
 {
 	auto fFile = fopen(file, "rb");
@@ -183,38 +193,17 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 				FreeMemory(ecx->m_Placeholder, 0); // free memory for allocator
 				ecx->m_Placeholder = nullptr;
 
-				ecx->m_Placeholder = ecx->m_pAllocator->allocate(fSize, 4096u, ((ecx->m_nFileFlags & 0x20) != 0) + 1, 0); // and allocate it again but with different size
+				ecx->m_Placeholder = ecx->m_pAllocator->AllocateMemory(fSize, 4096u, ((ecx->m_nFileFlags & 0x20) != 0) + 1, 0); // and allocate it again but with different size
 
 				if (!ecx->m_Placeholder)
 				{
-					LOGERROR("[FILEREAD] %s failed to allocate memory! [Shortage: %d/Request: %d]", ecx->m_pAllocator->m_TargetAlloc, fSize - ecx->m_pAllocator->getFreeMemory(), fSize);
-					if (ecx->m_pAllocator->m_pReservedHeap)
-					{
-						LOGINFO("[FILEREAD] Trying to allocate from backup heap...");
-						ecx->m_Placeholder = ecx->m_pAllocator->m_pReservedHeap->allocate(fSize, 4096u, ((ecx->m_nFileFlags & 0x20) != 0) + 1, 0); // if it wasn't allocated, allocate from reserved(in this case its global)
-						if (!ecx->m_Placeholder)
-						{
-							LOGERROR("[FILEREAD] Backup heap %s failed to allocate memory! [Shortage: %d/Request: %d]", ecx->m_pAllocator->m_pReservedHeap->m_TargetAlloc, fSize - ecx->m_pAllocator->m_pReservedHeap->getFreeMemory(), fSize);
-							LOGINFO("[FILEREAD] Now trying to load original!");
-							ecx->m_nFileFlags |= 0x10000; // ABORTING, LOADING ORIGINAL
-							ecx->cleanup();
-							ecx->m_nWorkerState = 1;
-							ecx->m_nWaitAmount = 0;
-							fclose(file);
-							return 1;
-						}
-					}
-					else
-					{
-						LOGERROR("[FILEREAD] No backup heap, we're stuck!");
-						LOGINFO("[FILEREAD] Now trying to load original!");
-						ecx->m_nFileFlags |= 0x10000;
-						ecx->cleanup();
-						ecx->m_nWorkerState = 1;
-						ecx->m_nWaitAmount = 0;
-						fclose(file);
-						return 1;
-					}
+					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%.1f)!", modName, ((float)fSize / 1024.f) / 1024.f);
+					ecx->cleanup();
+					ecx->m_nWorkerState = 1;
+					ecx->m_nFileFlags |= 0x10000; // hoping that it will load original file
+					ecx->m_nWaitAmount = 0;
+					fclose(file);
+					return 1;
 				}
 
 				if (fileSize == fSize)
@@ -256,17 +245,19 @@ int __fastcall hkDvdload(int ecx)
 
 			if (auto size = getFileSize(buff); size != -1 && *(int*)(ecx + 0x54))
 			{
-				LOGINFO("[DVDREAD] Replacing %s(%.1fMB) with %s(%.1fMB)", (char*)(ecx + 0xC), ((float)(*(int*)(ecx + 0x58)) / 1024.f) / 1024.f, modName, ((float)size / 1024.f) / 1024.f);
+				LOGINFO("[DVDREAD ] Replacing %s(%.1fMB) with %s(%.1fMB)", (char*)(ecx + 0xC), ((float)(*(int*)(ecx + 0x58)) / 1024.f) / 1024.f, modName, ((float)size / 1024.f) / 1024.f);
 				auto file = fopen(buff, "rb");
-				fseek(file, 0, SEEK_END);
 				fseek(file, 0, SEEK_SET);
 
+				int block = *(int*)(ecx + 0x54) - 4;
+				Hw::cHeap* allocator = *(Hw::cHeap**)(block);
+
 				FreeMemory(*(void**)(ecx + 0x54), 0); // as in hkLoad
-				*(void**)(ecx + 0x54) = Hw::cHeapGlobal::get()->allocate(size, 4096u, 0, 0);
+				*(void**)(ecx + 0x54) = allocator->AllocateMemory(size, 4096u, 1, 0);
 
 				if (!*(void**)(ecx + 0x54))
 				{
-					LOGERROR("[DVDREAD ] Failed to allocate memory!");
+					LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%.1f)!", modName, ((float)size / 1024.f) / 1024.f);
 					fclose(file);
 					return 0;
 				}
@@ -277,7 +268,7 @@ int __fastcall hkDvdload(int ecx)
 				fread(*(void**)(ecx + 0x54), 1u, size, file);
 				fclose(file);
 
-				*(int*)ecx = 2;
+				*(int*)ecx = 5;
 				return 0;
 			}
 		}
@@ -518,6 +509,10 @@ public:
 
 		trg = (LPVOID)(shared::base + 0xE9C0F6);
 		MH_CreateHook(trg, hkCriFsFileLoad, (LPVOID*)&oCriFsFileLoad);
+		MH_EnableHook(trg);
+
+		trg = (LPVOID)(shared::base + 0x9EB160);
+		MH_CreateHook(trg, hkDvdReadInit, (LPVOID*)&oDvdReadInit);
 		MH_EnableHook(trg);
 
 		*(CriErrCbFunc_t**)(shared::base + 0x1CAE15C) = (CriErrCbFunc_t*)criErr_Callback;
