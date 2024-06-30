@@ -2,6 +2,7 @@
 #include "lib.h"
 #include <string>
 #include <common.h>
+#include <format>
 #pragma warning(disable : 4996)
 
 #define MAX_MODS_PROFILE 1024
@@ -24,6 +25,12 @@ namespace ModLoader
 	inline bool bInit = false;
 	inline bool bIgnoreScripts = false;
 	inline bool bIgnoreDATLoad = false;
+
+	void startup();
+	void SortProfiles();
+	void Load();
+	void Save();
+	std::string getModFolder();
 
 	struct ModProfile
 	{
@@ -54,13 +61,13 @@ namespace ModLoader
 
 		void Save();
 		void Load(const char* name);
+
+		std::string getMyPath()
+		{
+			return std::format("{}\\{}", getModFolder().c_str(), m_name);
+		};
+
 	};
 
 	inline lib::StaticArray<ModProfile*, MAX_MODS_PROFILE> Profiles;
-
-	void startup();
-	void SortProfiles();
-	void Load();
-	void Save();
-	std::string getModFolder();
 }

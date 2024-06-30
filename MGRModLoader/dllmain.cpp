@@ -10,6 +10,12 @@
 #include <ctime>
 #include <lib.h>
 
+BOOL FileExists(const char* filename)
+{
+	struct stat buffer;
+	return (stat(filename, &buffer) == 0);
+}
+
 #pragma comment(lib, "urlmon.lib")
 
 char LOG_PATH[MAX_PATH];
@@ -32,7 +38,7 @@ inline void __cdecl dbgPrint(const char* fmt, ...)
 	}
 }
 
-constexpr float MOD_LOADER_VERSION = 1.4f;
+constexpr float MOD_LOADER_VERSION = 1.50f;
 
 struct FileRead
 {
@@ -133,10 +139,12 @@ BOOL __fastcall hkDvdReadInit(int ecx, void*, const char* filepath, void* fileda
 
 size_t getFileSize(const char* file)
 {
+	if (!FileExists(file))
+		return -1;
+
 	auto fFile = fopen(file, "rb");
 	if (!fFile)
 		return -1;
-
 	fseek(fFile, 0L, SEEK_END);
 	auto filesize = ftell(fFile);
 	fclose(fFile);
@@ -147,17 +155,20 @@ size_t getFileSize(const char* file)
 size_t __cdecl hkGetFilesize(const char* file)
 {
 	auto size = oGetFilesize(file);
-	char buff[MAX_PATH];
-	if (size == 0)
+	if (ModLoader::bInit)
 	{
-		for (auto& prof : ModLoader::Profiles)
+		char buff[MAX_PATH];
+		if (size == 0)
 		{
-			if (!prof->m_bEnabled)
-				continue;
+			for (auto& prof : ModLoader::Profiles)
+			{
+				if (!prof->m_bEnabled)
+					continue;
 
-			sprintf(buff, "%s\\mods\\%s\\%s", ModLoader::path, prof->m_name, file);
-			if (auto fSize = getFileSize(buff); fSize != -1)
-				return fSize;
+				sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), file);
+				if (auto fSize = getFileSize(buff); fSize != -1)
+					return fSize;
+			}
 		}
 	}
 	return size;
@@ -174,7 +185,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 				continue;
 
 			char modName[128];
-			sprintf(buff, "%s\\mods\\%s\\%s", ModLoader::path, prof->m_name, ecx->m_FileName);
+			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), ecx->m_FileName);
 			sprintf(modName, "mods\\%s\\%s", prof->m_name, ecx->m_FileName);
 
 			if (auto fSize = getFileSize(buff); fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000) && !(ecx->m_nFileFlags & 0x10000))
@@ -197,7 +208,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 
 				if (!ecx->m_Placeholder)
 				{
-					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%.1f)!", modName, ((float)fSize / 1024.f) / 1024.f);
+					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%.1fMB)!", modName, ((float)fSize / 1024.f) / 1024.f);
 					ecx->cleanup();
 					ecx->m_nWorkerState = 1;
 					ecx->m_nFileFlags |= 0x10000; // hoping that it will load original file
@@ -239,7 +250,7 @@ int __fastcall hkDvdload(int ecx)
 			if (!prof->m_bEnabled)
 				continue;
 
-			sprintf(buff, "%s\\mods\\%s\\%s", ModLoader::path, prof->m_name, (char*)(ecx + 0xC));
+			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), (char*)(ecx + 0xC));
 			char modName[128];
 			sprintf(modName, "mods\\%s\\%s", prof->m_name, (char*)(ecx + 0xC));
 
@@ -257,7 +268,7 @@ int __fastcall hkDvdload(int ecx)
 
 				if (!*(void**)(ecx + 0x54))
 				{
-					LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%.1f)!", modName, ((float)size / 1024.f) / 1024.f);
+					LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%.1fMB)!", modName, ((float)size / 1024.f) / 1024.f);
 					fclose(file);
 					return 0;
 				}
@@ -284,39 +295,42 @@ int __cdecl criFsBinder_bindCpk(int a1, int a2, const char* Str, char* a4, size_
 
 int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a5)
 {
-	for (auto& prof : ModLoader::Profiles)
+	if (ModLoader::bInit)
 	{
-		if (!prof->m_bEnabled)
-			continue;
-
-		char buff[MAX_PATH];
-		sprintf(buff, "%s\\mods\\%s\\%s", ModLoader::path, prof->m_name, path);
-		if (getFileSize(buff) != -1)
+		for (auto& prof : ModLoader::Profiles)
 		{
-			if (((int(__cdecl*)(int*))(shared::base + 0xE971BB))((int*)(ecx + 4)) || !*(int*)(ecx + 4))
-			{
-				((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
-				*(int*)(ecx + 4) = NULL;
-			}
-			char modname[128];
-			sprintf(modname, "mods\\%s\\%s", prof->m_name, path);
+			if (!prof->m_bEnabled)
+				continue;
 
-			if (!criFsBinder_bindCpk(*(int*)(ecx + 4), 0, buff, 0, 0, (int*)(ecx + 8)))
+			char buff[MAX_PATH];
+			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), path);
+			if (getFileSize(buff) != -1)
 			{
-				LOGINFO("[BINDCPK ] Mounted %s successfully!", modname);
-				*(int*)(ecx + 0xC) = 1;
-				*(int*)(ecx) = 2;
-				*(int*)(ecx + 0x10) = a5;
-				return 1;
-			}
-			else
-			{
-				LOGERROR("[BINDCPK ] bindCpk failed somewhere?? %s", buff);
-				((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
-				*(int*)(ecx + 4) = NULL;
-				*(int*)(ecx) = NULL;
-				*(int*)(ecx + 0x10) = NULL;
-				return 0;
+				if (((int(__cdecl*)(int*))(shared::base + 0xE971BB))((int*)(ecx + 4)) || !*(int*)(ecx + 4))
+				{
+					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
+					*(int*)(ecx + 4) = NULL;
+				}
+				char modname[128];
+				sprintf(modname, "mods\\%s\\%s", prof->m_name, path);
+
+				if (!criFsBinder_bindCpk(*(int*)(ecx + 4), 0, buff, 0, 0, (int*)(ecx + 8)))
+				{
+					LOGINFO("[BINDCPK ] Mounted %s successfully!", modname);
+					*(int*)(ecx + 0xC) = 1;
+					*(int*)(ecx) = 2;
+					*(int*)(ecx + 0x10) = a5;
+					return 1;
+				}
+				else
+				{
+					LOGERROR("[BINDCPK ] bindCpk failed somewhere?? %s", buff);
+					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
+					*(int*)(ecx + 4) = NULL;
+					*(int*)(ecx) = NULL;
+					*(int*)(ecx + 0x10) = NULL;
+					return 0;
+				}
 			}
 		}
 	}
@@ -325,18 +339,21 @@ int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a
 
 int __fastcall hkLoadSound(int ecx, void*, int pData, int pEnvData, int pLoaderData)
 {
-	char buffer[MAX_PATH];
-	for (auto& prof : ModLoader::Profiles)
+	if (ModLoader::bInit)
 	{
-		if (!prof->m_bEnabled)
-			continue;
-
-		sprintf(buffer, "%s\\mods\\%s\\%s", ModLoader::path, prof->m_name, *(char**)(pData + 0x10)); // replacing a path to a sound with a path to a modified .wem/.bnk, yet still loads
-
-		if (getFileSize(buffer) != -1)
+		char buffer[MAX_PATH];
+		for (auto& prof : ModLoader::Profiles)
 		{
-			strcpy(*(char**)(pData + 0x10), buffer);
-			return oLoadSound(ecx, pData, pEnvData, pLoaderData);
+			if (!prof->m_bEnabled)
+				continue;
+
+			sprintf(buffer, "%s\\%s", prof->getMyPath().c_str(), *(char**)(pData + 0x10)); // replacing a path to a sound with a path to a modified .wem/.bnk, yet still loads
+
+			if (getFileSize(buffer) != -1)
+			{
+				strcpy(*(char**)(pData + 0x10), buffer);
+				return oLoadSound(ecx, pData, pEnvData, pLoaderData);
+			}
 		}
 	}
 	return oLoadSound(ecx, pData, pEnvData, pLoaderData);
@@ -348,7 +365,7 @@ float newVersion;
 
 bool CheckUpdates()
 {
-	char buff[256];
+	char buff[MAX_PATH];
 	GetEnvironmentVariableA("TEMP", buff, sizeof(buff));
 	strcat(buff, "/MODLOADERVER.ini");
 	LOGINFO("Checking updates...");
@@ -359,17 +376,21 @@ bool CheckUpdates()
 		newVersion = atof(str);
 
 		if (newVersion > MOD_LOADER_VERSION)
-			LOGINFO("New version is available!")
+		{
+			LOGINFO("New version is available!");
+			return true;
+		}
 		else if (newVersion == -1.0f || newVersion <= MOD_LOADER_VERSION)
-			LOGINFO("Updates are not available.")
-
-			if (newVersion == -1.0f || newVersion <= MOD_LOADER_VERSION)
-				return false;
-			else if (newVersion > MOD_LOADER_VERSION)
-				return true;
+		{
+			LOGINFO("Updates are not available.");
+			return false;
+		}
 	}
 	else
+	{
 		LOGERROR("Failed to check updates!");
+		return false;
+	}
 	return false;
 }
 
@@ -465,7 +486,7 @@ public:
 
 		Events::OnUpdateEvent += []()
 			{
-				if (shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false, 0))
+				if (bIsForegroundWindow && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false, 0))
 					gui::bShow ^= true;
 			};
 

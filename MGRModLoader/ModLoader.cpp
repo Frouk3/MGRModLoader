@@ -4,7 +4,9 @@
 #include "injector/injector.hpp"
 #include <shared.h>
 #include <common.h>
-#include "ini.h"
+#include <ini.h>
+
+extern BOOL FileExists(const char* filename);
 
 namespace fs = std::filesystem;
 
@@ -74,11 +76,8 @@ void openScripts()
 			continue;
 
 		char searchPath[MAX_PATH];
-		char profilePath[MAX_PATH];
 
-		sprintf(profilePath, "%s\\%s", ModLoader::getModFolder().c_str(), prof->m_name);
-
-		sprintf(searchPath, "%s\\*.asi", profilePath);
+		sprintf(searchPath, "%s\\*.asi", prof->getMyPath().c_str());
 
 		hFind = FindFirstFileA(searchPath, &fd);
 		if (hFind != (HANDLE)-1)
@@ -86,7 +85,7 @@ void openScripts()
 			do
 			{
 				char filePath[MAX_PATH];
-				sprintf(filePath, "%s\\%s", profilePath, fd.cFileName);
+				sprintf(filePath, "%s\\%s", prof->getMyPath().c_str(), fd.cFileName);
 
 				HMODULE h = LoadLibraryA(filePath);
 				SetCurrentDirectoryA(origPath);
@@ -146,7 +145,7 @@ void ModLoader::SortProfiles()
 
 void ModLoader::Load()
 {
-	IniReader ini((std::string(path) + "\\MGRModLoaderSettings.ini").c_str());
+	IniReader ini("MGRModLoaderSettings.ini");
 
 	bIgnoreScripts = ini.ReadBool("ModLoader", "IgnoreScripts", false);
 	bIgnoreDATLoad = ini.ReadBool("ModLoader", "IgnoreFiles", false);
@@ -157,8 +156,8 @@ void ModLoader::Load()
 
 void ModLoader::Save()
 {
-	remove((getModFolder() + "profiles.ini").c_str());
-	IniReader ini((std::string(path) + "\\MGRModLoaderSettings.ini").c_str());
+	remove((getModFolder() + "\\profiles.ini").c_str());
+	IniReader ini("MGRModLoaderSettings.ini");
 
 	ini.WriteBool("ModLoader", "IgnoreScripts", bIgnoreScripts);
 	ini.WriteBool("ModLoader", "IgnoreFiles", bIgnoreDATLoad);
@@ -169,12 +168,12 @@ void ModLoader::Save()
 
 std::string ModLoader::getModFolder()
 {
-	return std::string(path) + "\\mods\\";
+	return std::string(path) + "\\mods";
 }
 
 void ModLoader::ModProfile::Load(const char* name)
 {
-	IniReader prof((getModFolder() + std::string("profiles.ini")).c_str());
+	IniReader prof(getModFolder() + "\\profiles.ini");
 	
 	this->m_bEnabled = prof.ReadBool(name, "Enabled", true);
 	this->m_nPriority = prof.ReadInt(name, "Priority", 7);
@@ -183,7 +182,7 @@ void ModLoader::ModProfile::Load(const char* name)
 void ModLoader::ModProfile::Save()
 {
 	LOGINFO("Saving %s...", this->m_name)
-	IniReader prof((getModFolder() + std::string("profiles.ini")).c_str());
+	IniReader prof(getModFolder() + "\\profiles.ini");
 
 	prof.WriteBool(this->m_name, "Enabled", this->m_bEnabled);
 	prof.WriteInt(this->m_name, "Priority", this->m_nPriority);
