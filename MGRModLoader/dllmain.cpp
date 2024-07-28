@@ -41,7 +41,7 @@ inline void __cdecl dbgPrint(const char* fmt, ...)
 	}
 }
 
-constexpr float MOD_LOADER_VERSION = 1.50f;
+constexpr float MOD_LOADER_VERSION = 1.6f;
 
 struct FileRead
 {
@@ -400,7 +400,7 @@ bool CheckUpdates()
 	if (URLDownloadToFileA(NULL, "https://raw.githubusercontent.com/Frouk3/ModMenuVersions/main/MODLOADERVERSION.ini", buff, NULL, NULL) == S_OK)
 	{
 		char str[16];
-		GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", NULL, str, sizeof(str), buff);
+		GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", "-1.0", str, sizeof(str), buff);
 		newVersion = atof(str);
 
 		if (newVersion > MOD_LOADER_VERSION)
@@ -576,17 +576,64 @@ public:
 	}
 } plugin;
 
+
+const char* formatFloatPrecision(char* buff)
+{
+	char* chr = strrchr(buff, '0');
+
+	if (chr)
+	{
+		while (chr)
+		{
+			if (!chr)
+				break;
+
+			if (*chr == '\0')
+				break;
+
+			if (chr[1] != '\0' && chr[1] != '0')
+				break;
+
+			if (*chr == '0')
+			{
+				if (chr[1] == '\0')
+					*chr = '\0';
+
+				if (chr[1] == '0')
+					*chr = '\0';
+			}
+
+			chr = strrchr(buff, '0');
+		}
+	}
+
+	return buff;
+}
+
 void gui::RenderWindow()
 {
 	if (!bUserNoticed && bUpdateAvailable)
 		ImGui::OpenPopup("Update checker");
 	if (ImGui::BeginPopupModal("Update checker", NULL, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
 	{
-		ImGui::Text("New update is available(New: %.2f, Installed: %.2f)", newVersion, MOD_LOADER_VERSION);
+		char version[32], newVer[32];
+
+		sprintf(version, "%f", MOD_LOADER_VERSION);
+		sprintf(newVer, "%f", newVersion);
+
+		formatFloatPrecision(version);
+		formatFloatPrecision(newVer);
+
+		ImGui::Text("New update is available(New: %s, Installed: %s)", version, newVer);
 		if (ImGui::Button("OK"))
 		{
+			ShellExecute(NULL, "open", "https://www.nexusmods.com/metalgearrisingrevengeance/mods/650?tab=files", NULL, NULL, FALSE);
 			ImGui::CloseCurrentPopup();
 			bUserNoticed = true;
+		}
+		if (ImGui::IsItemHovered())
+		{
+			ImGui::SetTooltip("(Pressing OK will redirect you to Nexusmods page where you can download newest version of Mod Loader)");
 		}
 		ImGui::SameLine();
 		if (ImGui::Button("Cancel"))
@@ -666,7 +713,13 @@ void gui::RenderWindow()
 		}
 		if (ImGui::BeginTabItem("About"))
 		{
-			ImGui::Text("Mod Loader (%.2f)", MOD_LOADER_VERSION);
+			char ver[32];
+
+			sprintf(ver, "%f", MOD_LOADER_VERSION);
+
+			formatFloatPrecision(ver);
+
+			ImGui::Text("Mod Loader (%s)", ver);
 			ImGui::Text("Build : (%s | %s)", __TIME__, __DATE__);
 			ImGui::Spacing();
 			if (ImGui::Button("YouTube", ImVec2(100, 20)))
