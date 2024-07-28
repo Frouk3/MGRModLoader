@@ -25,6 +25,7 @@ namespace ModLoader
 	inline bool bInit = false;
 	inline bool bIgnoreScripts = false;
 	inline bool bIgnoreDATLoad = false;
+	inline bool bEnableLogging = true;
 
 	void startup();
 	void SortProfiles();

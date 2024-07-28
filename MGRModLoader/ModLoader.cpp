@@ -149,6 +149,7 @@ void ModLoader::Load()
 
 	bIgnoreScripts = ini.ReadBool("ModLoader", "IgnoreScripts", false);
 	bIgnoreDATLoad = ini.ReadBool("ModLoader", "IgnoreFiles", false);
+	bEnableLogging = ini.ReadBool("ModLoader", "EnableLogging", true);
 
 	for (auto& profile : Profiles)
 		profile->Load(profile->m_name);
@@ -161,6 +162,7 @@ void ModLoader::Save()
 
 	ini.WriteBool("ModLoader", "IgnoreScripts", bIgnoreScripts);
 	ini.WriteBool("ModLoader", "IgnoreFiles", bIgnoreDATLoad);
+	ini.WriteBool("ModLoader", "EnableLogging", bEnableLogging);
 
 	for (auto& profile : Profiles)
 		profile->Save();

@@ -22,6 +22,9 @@ char LOG_PATH[MAX_PATH];
 
 inline void __cdecl dbgPrint(const char* fmt, ...)
 {
+	if (!ModLoader::bEnableLogging)
+		return;
+
 	FILE* logFile = fopen(LOG_PATH, "ab+");
 	if (logFile)
 	{
@@ -100,6 +103,21 @@ struct FileRead
 #include "imgui/imgui.h"
 #include "include/MinHook.h"
 
+size_t getFileSize(const char* file)
+{
+	if (!FileExists(file))
+		return -1;
+
+	auto fFile = fopen(file, "rb");
+	if (!fFile)
+		return -1;
+	fseek(fFile, 0L, SEEK_END);
+	auto filesize = ftell(fFile);
+	fclose(fFile);
+
+	return filesize;
+}
+
 typedef int(__thiscall* load_t)(FileRead::Work* ecx);
 static load_t oLoad = NULL;
 
@@ -120,9 +138,34 @@ static criload_t oCriFsFileLoad = NULL;
 
 int __cdecl hkCriFsFileLoad(int loader) // load here .usm
 {
-	if (*(int*)(loader + 0xB4) != 1u)
-		return 2;
+	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
+	{
+		if (*(int*)(loader + 0xB4) != 1u)
+			return 2;
 
+		const char* ext = strrchr(*(const char**)(loader + 0xEC), '.');
+
+		if (!strcmp(ext, ".usm"))
+		{
+			char buffer[MAX_PATH];
+
+			for (auto& prof : ModLoader::Profiles)
+			{
+				if (!prof->m_bEnabled)
+					continue;
+
+				sprintf(buffer, "%s\\%s", prof->getMyPath().c_str(), *(const char**)(loader + 0xEC));
+				if (getFileSize(buffer) != -1)
+				{
+					LOGINFO("[CRIWARE ] Replacing %s with %s...", *(char**)(loader + 0xEC), buffer);
+					strcpy(*(char**)(loader + 0xEC), buffer);
+					break;
+				}
+			}
+		}
+
+		// LOGINFO("[CRIWARE ] Loader %s / %d status", *(const char**)(loader + 0xEC), *(int*)(*(int*)(loader + 0xA8) + 0xC));
+	}
 
 	return oCriFsFileLoad(loader);
 }
@@ -137,25 +180,10 @@ BOOL __fastcall hkDvdReadInit(int ecx, void*, const char* filepath, void* fileda
 	return oDvdReadInit(ecx, filepath, filedata, buffSize, a5);
 }
 
-size_t getFileSize(const char* file)
-{
-	if (!FileExists(file))
-		return -1;
-
-	auto fFile = fopen(file, "rb");
-	if (!fFile)
-		return -1;
-	fseek(fFile, 0L, SEEK_END);
-	auto filesize = ftell(fFile);
-	fclose(fFile);
-
-	return filesize;
-}
-
 size_t __cdecl hkGetFilesize(const char* file)
 {
 	auto size = oGetFilesize(file);
-	if (ModLoader::bInit)
+	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
 		char buff[MAX_PATH];
 		if (size == 0)
@@ -188,7 +216,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), ecx->m_FileName);
 			sprintf(modName, "mods\\%s\\%s", prof->m_name, ecx->m_FileName);
 
-			if (auto fSize = getFileSize(buff); fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000) && !(ecx->m_nFileFlags & 0x10000))
+			if (auto fSize = getFileSize(buff); fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000))
 			{
 				size_t fileSize = hkGetFilesize(ecx->m_FileName);
 				// result = oLoad(a1, a2, path, a4, a5, size, a7, placeholder, a8, a9);
@@ -295,7 +323,7 @@ int __cdecl criFsBinder_bindCpk(int a1, int a2, const char* Str, char* a4, size_
 
 int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a5)
 {
-	if (ModLoader::bInit)
+	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
 		for (auto& prof : ModLoader::Profiles)
 		{
@@ -339,7 +367,7 @@ int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a
 
 int __fastcall hkLoadSound(int ecx, void*, int pData, int pEnvData, int pLoaderData)
 {
-	if (ModLoader::bInit)
+	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
 		char buffer[MAX_PATH];
 		for (auto& prof : ModLoader::Profiles)
@@ -490,6 +518,11 @@ public:
 					gui::bShow ^= true;
 			};
 
+		Events::OnMainCleanupEvent += []()
+			{
+				ModLoader::Save();
+			};
+
 		// making each heap manager to have global heap manager as backup, making game load as much as it wants to
 		Events::OnGameStartupEvent += []()
 			{
@@ -540,11 +573,6 @@ public:
 
 		InitGUI();
 
-	}
-
-	~Plugin()
-	{
-		ModLoader::Save();
 	}
 } plugin;
 
@@ -622,6 +650,13 @@ void gui::RenderWindow()
 		{
 			ImGui::Checkbox("Don't load files", &ModLoader::bIgnoreDATLoad);
 			ImGui::Checkbox("Don't load scripts", &ModLoader::bIgnoreScripts);
+			if (ImGui::Checkbox("Enable logging", &ModLoader::bEnableLogging) && !ModLoader::bEnableLogging)
+			{
+				if (FileExists(LOG_PATH))
+					remove(LOG_PATH); // delete the log because user surely doesn't want it
+			}
+			if (ImGui::IsItemHovered())
+				ImGui::SetTooltip("Enable/disable writing into a log file\nIt surely helps developers to find the issue you've encountered with");
 			if (ImGui::Button("Save"))
 				ModLoader::Save();
 			ImGui::SameLine();
