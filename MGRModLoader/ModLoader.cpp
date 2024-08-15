@@ -6,6 +6,13 @@
 #include <common.h>
 #include <ini.h>
 
+inline cHeapManager* GetHeapManager()
+{
+	static cHeapManager manager;
+
+	return &manager;
+}
+
 extern BOOL FileExists(const char* filename);
 
 namespace fs = std::filesystem;
@@ -35,9 +42,10 @@ void openProfiles(const char *directory)
 			{
 				if (strlen(fd.cFileName) < 64u)
 				{
-					auto prof = new ModLoader::ModProfile(fd.cFileName);
+					ModLoader::ModProfile* prof = GetHeapManager()->allocate<ModLoader::ModProfile>();
 					if (prof)
 					{
+						*prof = ModLoader::ModProfile(fd.cFileName);
 						ModLoader::Profiles.push_back(prof);
 						prof->Load(prof->m_name);
 						LOGINFO("Loading %s(%s, %d)", prof->m_name, prof->m_bEnabled ? "Enabled" : "Disabled", prof->m_nPriority);

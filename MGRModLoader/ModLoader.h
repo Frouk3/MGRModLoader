@@ -3,9 +3,152 @@
 #include <string>
 #include <common.h>
 #include <format>
+#include <Hw.h>
 #pragma warning(disable : 4996)
 
 #define MAX_MODS_PROFILE 1024
+
+struct cHeapManager
+{
+	struct HeapBlock
+	{
+		int m_nSize;
+		cHeapManager* m_pAllocator;
+		HeapBlock* m_pNext;
+		HeapBlock* m_pPrev;
+
+		HeapBlock()
+		{
+			m_nSize = 0;
+			m_pAllocator = nullptr;
+			m_pNext = nullptr;
+			m_pPrev = nullptr;
+		}
+
+		void *getMemoryBlock() // where the allocation data stored
+		{
+			return (void*)((char*)this + sizeof(HeapBlock));
+		}
+	};
+
+	HANDLE m_Heap;
+	int m_nAllocated;
+	char* m_TargetAllocation;
+	HeapBlock* m_pFirst;
+	HeapBlock* m_pPrev;
+	HeapBlock* m_pLast;
+
+	cHeapManager()
+	{
+		m_Heap = NULL;
+		m_nAllocated = 0;
+		m_pFirst = nullptr;
+		m_pPrev = nullptr;
+		m_pLast = nullptr;
+		m_TargetAllocation = nullptr;
+	}
+
+	void *allocate(size_t size, bool bUseGameHeap = false)
+	{
+		if (bUseGameHeap)
+			return AllocateMemory(size);
+
+		if (!m_Heap)
+			return nullptr;
+
+		HeapBlock* block = (HeapBlock*)HeapAlloc(m_Heap, 1u, sizeof(*block) + size);
+
+		if (block)
+		{
+			HeapBlock* prevBlock = m_pPrev;
+
+			if (!m_pFirst)
+				m_pFirst = m_pPrev;
+
+			block->m_pAllocator = this;
+			block->m_nSize = size + sizeof(HeapBlock);
+
+			block->m_pNext = 0;
+			block->m_pPrev = prevBlock ? prevBlock : 0;
+			if (prevBlock)
+				prevBlock->m_pNext = block;
+
+			m_pPrev = block;
+
+			m_pLast = block;
+
+			m_nAllocated += block->m_nSize;
+
+			memset(block->getMemoryBlock(), 0, size);
+
+			return block->getMemoryBlock();
+		}
+
+		return nullptr;
+	}
+
+	template <typename tC>
+	tC *allocate()
+	{
+		return (tC*)allocate(sizeof(tC));
+	}
+
+	void* allocateNoBlock(size_t size)
+	{
+		if (!m_Heap)
+			return nullptr;
+
+		return HeapAlloc(m_Heap, 1u, size);
+	}
+
+	void free(HeapBlock* block, bool bGameFreeMemory = false)
+	{
+		if (bGameFreeMemory)
+		{
+			FreeMemory((void*)block, 0u);
+			return;
+		}
+
+		if (!m_Heap)
+			return;
+
+		if (block)
+		{
+			if (block->m_pPrev)
+				block->m_pPrev->m_pNext = block->m_pNext;
+
+			if (block->m_pNext)
+				block->m_pNext->m_pPrev = block->m_pPrev;
+
+			m_pPrev = block->m_pPrev;
+
+			m_nAllocated -= block->m_nSize;
+
+			if (block == m_pFirst)
+				m_pFirst = block->m_pNext ? block->m_pNext : nullptr;
+
+			if (m_pLast == block)
+				m_pLast = block->m_pPrev ? block->m_pPrev : nullptr;
+
+			HeapFree(m_Heap, 1u, block);
+		}
+	}
+
+	void create(const char* targetAllocation)
+	{
+		if (m_Heap)
+			return;
+
+		m_nAllocated = 0;
+		m_Heap = HeapCreate(0u, 0u, 0u);
+		m_pFirst = nullptr;
+		m_pPrev = nullptr;
+
+		m_TargetAllocation = (char*)targetAllocation;
+	}
+};
+
+inline cHeapManager* GetHeapManager();
 
 extern inline void __cdecl dbgPrint(const char* fmt, ...);
 

@@ -9,6 +9,26 @@
 #include <shellapi.h>
 #include <ctime>
 #include <lib.h>
+#include <Behavior.h>
+
+char LOG_PATH[MAX_PATH];
+
+FILE* logFile = nullptr;
+
+void openLog()
+{
+	if (!logFile)
+		logFile = fopen(LOG_PATH, "w");
+}
+
+void closeLog()
+{
+	if (logFile)
+	{
+		fclose(logFile);
+		logFile = nullptr;
+	}
+}
 
 BOOL FileExists(const char* filename)
 {
@@ -18,26 +38,30 @@ BOOL FileExists(const char* filename)
 
 #pragma comment(lib, "urlmon.lib")
 
-char LOG_PATH[MAX_PATH];
-
 inline void __cdecl dbgPrint(const char* fmt, ...)
 {
 	if (!ModLoader::bEnableLogging)
 		return;
 
-	FILE* logFile = fopen(LOG_PATH, "ab+");
+	if (!logFile)
+		openLog();
+
 	if (logFile)
 	{
 		char fmtBuffer[512];
 		ZeroMemory(fmtBuffer, sizeof(fmtBuffer));
-		auto tm = time(nullptr);
-		auto t = localtime(&tm);
+
+		SYSTEMTIME st;
+
+		GetLocalTime(&st);
 		va_list va;
 		va_start(va, fmt);
 		vsprintf(fmtBuffer, fmt, va);
-		fprintf(logFile, "[%02d:%02d:%02d] %s\n", t->tm_hour, t->tm_min, t->tm_sec, fmtBuffer);
+		fprintf(logFile, "[%02d:%02d:%02d.%03d] %s\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, fmtBuffer);
+
+		fflush(logFile);
+
 		va_end(va);
-		fclose(logFile);
 	}
 }
 
@@ -157,7 +181,7 @@ int __cdecl hkCriFsFileLoad(int loader) // load here .usm
 				sprintf(buffer, "%s\\%s", prof->getMyPath().c_str(), *(const char**)(loader + 0xEC));
 				if (getFileSize(buffer) != -1)
 				{
-					LOGINFO("[CRIWARE ] Replacing %s with %s...", *(char**)(loader + 0xEC), buffer);
+					LOGINFO("[CRIWARE ] Replacing %s -> %s...", *(char**)(loader + 0xEC), buffer);
 					strcpy(*(char**)(loader + 0xEC), buffer);
 					break;
 				}
@@ -202,6 +226,8 @@ size_t __cdecl hkGetFilesize(const char* file)
 	return size;
 }
 
+
+// TODO: Load file data from threads
 int __fastcall hkLoad(FileRead::Work* ecx)
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad && !(ecx->m_nFileFlags & 0x10000)) 
@@ -221,7 +247,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 				size_t fileSize = hkGetFilesize(ecx->m_FileName);
 				// result = oLoad(a1, a2, path, a4, a5, size, a7, placeholder, a8, a9);
 				if (fileSize != fSize)
-					LOGINFO("[FILEREAD] Replacing %s(%.1fMB) with %s(%.1fMB)", ecx->m_FileName, (float)(((float)ecx->m_nFilesize / 1024.f) / 1024.f), modName, (float)(((float)fSize / 1024.f) / 1024.f));
+					LOGINFO("[FILEREAD] Replacing %s(%.1fMB) -> %s(%.1fMB)", ecx->m_FileName, (float)(((float)ecx->m_nFilesize / 1024.f) / 1024.f), modName, (float)(((float)fSize / 1024.f) / 1024.f));
 
 				if (fileSize == fSize)
 					LOGINFO("[FILEREAD] Loading %s(%.1fMB)...", modName, ((float)fSize / 1024.f) / 1024.f);
@@ -284,7 +310,7 @@ int __fastcall hkDvdload(int ecx)
 
 			if (auto size = getFileSize(buff); size != -1 && *(int*)(ecx + 0x54))
 			{
-				LOGINFO("[DVDREAD ] Replacing %s(%.1fMB) with %s(%.1fMB)", (char*)(ecx + 0xC), ((float)(*(int*)(ecx + 0x58)) / 1024.f) / 1024.f, modName, ((float)size / 1024.f) / 1024.f);
+				LOGINFO("[DVDREAD ] Replacing %s(%.1fMB) -> %s(%.1fMB)", (char*)(ecx + 0xC), ((float)(*(int*)(ecx + 0x58)) / 1024.f) / 1024.f, modName, ((float)size / 1024.f) / 1024.f);
 				auto file = fopen(buff, "rb");
 				fseek(file, 0, SEEK_SET);
 
@@ -482,7 +508,11 @@ typedef void(__cdecl* CriErrCbFunc_t)(const char* errid, unsigned int p1, unsign
 
 void __cdecl criErr_Callback(const char* errId, unsigned int p1, unsigned int p2, unsigned int* parray)
 {
-	LOGINFO("[CRIWARE ] %s", errId, p1, p2, parray);
+	char buff[1024];
+
+	sprintf(buff, errId, p1, p2, parray);
+
+	LOGERROR("[CRIWARE ] %s", buff);
 }
 
 class Plugin
@@ -497,11 +527,39 @@ public:
 
 	Plugin()
 	{
+		GetHeapManager()->create("GLOBAL");
+		
 		GetCurrentDirectoryA(sizeof(ModLoader::path), ModLoader::path);
 
 		sprintf(LOG_PATH, "%s\\LoaderLog.txt", ModLoader::path);
 
-		remove(LOG_PATH); // remove it so we won't mess up latest log(and eventually making it bigger)
+		openLog();
+
+		/// FOR HEAP MANAGER TESTING PURPOSES
+		/*
+		for (int i = 0; i < 32; i++)
+		{
+			auto heapMgr = GetHeapManager();
+
+			auto mem = (int*)heapMgr->allocate(8u, false);
+
+			*mem = shared::random(1, 10);
+			mem[1] = shared::random(1, 10);
+		}
+
+		for (auto block = GetHeapManager()->m_pLast; block; block = block->m_pPrev)
+		{
+			int* mem = (int*)block->getMemoryBlock();
+			LOG("Heap at %X(size: %d), value = %d, %d", block, block->m_nSize, *mem, mem[1]);
+
+			block->m_pAllocator->free(block);
+
+			LOG("First %X, last %X, prev %X", GetHeapManager()->m_pFirst, GetHeapManager()->m_pLast, GetHeapManager()->m_pPrev);
+		}
+		*/
+		/// 
+
+		// remove(LOG_PATH); // remove it so we won't mess up latest log(and eventually making it bigger)
 
 		assert(MH_Initialize() == MH_OK);
 
@@ -514,13 +572,14 @@ public:
 
 		Events::OnUpdateEvent += []()
 			{
-				if (bIsForegroundWindow && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false, 0))
+				if (bIsForegroundWindow && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false))
 					gui::bShow ^= true;
 			};
 
 		Events::OnMainCleanupEvent += []()
 			{
 				ModLoader::Save();
+				closeLog();
 			};
 
 		// making each heap manager to have global heap manager as backup, making game load as much as it wants to
@@ -534,6 +593,8 @@ public:
 					{
 						if (!heap->m_pReservedHeap && heap != Hw::cHeapGlobal::get())
 							heap->m_pReservedHeap = Hw::cHeapGlobal::get();
+
+						// LOGINFO("Set backup for %s", heap->m_TargetAlloc);
 
 						heap = heap->m_pNext;
 					} while (heap);
