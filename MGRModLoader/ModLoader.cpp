@@ -53,7 +53,7 @@ void openProfiles(const char *directory)
 				}
 				else
 				{
-					LOGINFO("Profile name exceeds 64 characters, simplify the name!");
+					LOGINFO("Profile name exceeds 64 characters, simplify the name for %s!", fd.cFileName);
 				}
 			}
 		}
@@ -71,9 +71,6 @@ void openScripts()
 	char origPath[MAX_PATH];
 	GetCurrentDirectoryA(sizeof(origPath), origPath);
 
-	WIN32_FIND_DATA fd;
-	HANDLE hFind = (HANDLE)-1;
-
 	LOGINFO("Loading scripts...");
 
 	int scriptsAmount = 0;
@@ -83,41 +80,93 @@ void openScripts()
 		if (!prof->m_bEnabled)
 			continue;
 
-		char searchPath[MAX_PATH];
-
-		sprintf(searchPath, "%s\\*.asi", prof->getMyPath().c_str());
-
-		hFind = FindFirstFileA(searchPath, &fd);
-		if (hFind != (HANDLE)-1)
-		{
-			do
+		prof->FileWalk([&](ModLoader::ModProfile::File* file)
 			{
-				char filePath[MAX_PATH];
-				sprintf(filePath, "%s\\%s", prof->getMyPath().c_str(), fd.cFileName);
+				// Using strlow just to be sure if the asi may contain high case ".asi"
+				if (strcmp(Utils::strlow((const char*)&file->m_path[strlen(file->m_path) - 4]), ".asi") || file->m_bInSubFolder) // Do not load if not asi or asi is in sub folder // changed to strcmp, since if we just set .asi before extension, it will load anyway
+					return;
 
-				HMODULE h = LoadLibraryA(filePath);
-				SetCurrentDirectoryA(origPath);
+				auto h = LoadLibraryA(file->m_path);
 
 				if (h != NULL)
 				{
-					LOGINFO("Loading %s script...", fd.cFileName)
-					auto procedure = (void(*)())GetProcAddress(h, "InitializeASI");
+					if (auto init = (void(*)())GetProcAddress(h, "InitializeASI"); init)
+						init();
 
-					if (procedure != NULL)
-						procedure();
+					auto asiName = strrchr(file->m_path, '\\') + 1;
 
-					scriptsAmount += 1;
+					LOGINFO("Loading %s plugin...", asiName);
+
+					++scriptsAmount;
 				}
 				else
 				{
-					LOGERROR("Failed to load %s!", fd.cFileName)
+					LOGERROR("Failed to load %s plugin!", prof->m_name);
 				}
-			} while (FindNextFileA(hFind, &fd) != 0);
 
-			FindClose(hFind);
-		}
+				SetCurrentDirectoryA(origPath);
+			});
 	}
 	LOGINFO("%d scripts loaded!", scriptsAmount);
+}
+
+inline LONGLONG GetLongFromLargeInteger(DWORD LowPart, DWORD HighPart)
+{
+	LARGE_INTEGER l;
+	l.LowPart = LowPart;
+	l.HighPart = HighPart;
+	return l.QuadPart;
+}
+
+void findFiles(const char* directory, Hw::cFixedVector<ModLoader::ModProfile::File *>& files, const bool bInSubFolder = false)
+{
+	WIN32_FIND_DATA fd;
+	HANDLE hFind = INVALID_HANDLE_VALUE;
+	char searchPath[MAX_PATH];
+
+	sprintf(searchPath, "%s\\*", directory);
+
+	hFind = FindFirstFileA(searchPath, &fd);
+	if (hFind == INVALID_HANDLE_VALUE)
+	{
+		LOGERROR("Cannot read files for %s", directory);
+		return;
+	}
+	do
+	{
+		if (strncmp(fd.cFileName, ".", 1u) && strncmp(fd.cFileName, "..", 2u))
+		{
+			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			{
+				char directoryPath[MAX_PATH];
+
+				sprintf(directoryPath, "%s\\%s", directory, fd.cFileName);
+				findFiles(directoryPath, files, true);
+			}
+			else
+			{
+				char path[MAX_PATH];
+
+				sprintf(path, "%s\\%s", directory, fd.cFileName);
+
+				auto fileSize = GetLongFromLargeInteger(fd.nFileSizeLow, fd.nFileSizeHigh);
+
+				auto file = GetHeapManager()->allocate<ModLoader::ModProfile::File>();
+
+				if (file)
+				{
+					*file = ModLoader::ModProfile::File(fileSize, path);
+
+					file->m_bInSubFolder = bInSubFolder;
+
+					files.push_back(file);
+				}
+			}
+		}
+
+	} while (FindNextFileA(hFind, &fd) != 0);
+
+	FindClose(hFind);
 }
 
 void ModLoader::startup()
@@ -125,8 +174,19 @@ void ModLoader::startup()
 	Load();
 
 	openProfiles(getModFolder().c_str());
+	int enabledMods = 0;
+	for (auto& profile : Profiles)
+	{
+		if (profile->m_bEnabled)
+		{
+			LOGINFO("%s -> Startup", profile->m_name);
+			profile->Startup();
+			enabledMods++;
+		}
+	}
 	openScripts();
-	LOGINFO("%d mods loaded!", Profiles.m_nSize);
+	LOGINFO("%d mod profiles loaded!", Profiles.m_nSize);
+	LOGINFO("Only %d was enabled", enabledMods);
 
 	if (Profiles.m_nSize)
 		SortProfiles();
@@ -151,6 +211,8 @@ void ModLoader::SortProfiles()
 	}
 }
 
+FILE *profileFile = nullptr;
+
 void ModLoader::Load()
 {
 	IniReader ini("MGRModLoaderSettings.ini");
@@ -166,6 +228,7 @@ void ModLoader::Load()
 void ModLoader::Save()
 {
 	remove((getModFolder() + "\\profiles.ini").c_str());
+	profileFile = fopen((getModFolder() + "\\profiles.ini").c_str(), "a");
 	IniReader ini("MGRModLoaderSettings.ini");
 
 	ini.WriteBool("ModLoader", "IgnoreScripts", bIgnoreScripts);
@@ -174,6 +237,8 @@ void ModLoader::Save()
 
 	for (auto& profile : Profiles)
 		profile->Save();
+
+	fclose(profileFile);
 }
 
 std::string ModLoader::getModFolder()
@@ -189,6 +254,59 @@ void ModLoader::ModProfile::Load(const char* name)
 	this->m_nPriority = prof.ReadInt(name, "Priority", 7);
 }
 
+void ModLoader::ModProfile::Startup()
+{
+	if (!m_bStarted)
+	{
+		if (!m_files.m_pBegin)
+		{
+			m_files.m_pBegin = (File**)GetHeapManager()->allocate(sizeof(File*) * 1024);
+			if (m_files.m_pBegin)
+			{
+				m_files.m_nCapacity = 1024;
+				m_files.m_nSize = 0;
+				m_files.field_10 = 1;
+			}
+			else
+			{
+				LOGERROR("Failed to startup the mod!");
+			}
+		}
+
+		ReadFiles();
+
+		if (m_files.m_pBegin)
+		{
+			for (auto file : m_files)
+			{
+				m_nTotalSize += file->m_nSize;
+				LOGINFO("%s -> %s [%s]", m_name, file->m_path, Utils::getProperSize(file->m_nSize).c_str());
+			}
+			LOGINFO("%s -> Size: %s", m_name, Utils::getProperSize(m_nTotalSize).c_str());
+		}
+	}
+
+	m_bStarted = true;
+}
+
+void ModLoader::ModProfile::Restart()
+{
+	m_bStarted = false;
+
+	Shutdown();
+
+	Startup();
+}
+
+void ModLoader::ModProfile::ReadFiles()
+{
+	char directory[MAX_PATH];
+
+	sprintf(directory, "%s", getMyPath().c_str());
+
+	findFiles(directory, m_files);
+}
+
 void ModLoader::ModProfile::Save()
 {
 	LOGINFO("Saving %s...", this->m_name)
@@ -196,4 +314,7 @@ void ModLoader::ModProfile::Save()
 
 	prof.WriteBool(this->m_name, "Enabled", this->m_bEnabled);
 	prof.WriteInt(this->m_name, "Priority", this->m_nPriority);
+
+	fprintf(profileFile, "\n"); // at least not stacking up on each other
+	fflush(profileFile);
 }

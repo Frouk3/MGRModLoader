@@ -65,7 +65,7 @@ inline void __cdecl dbgPrint(const char* fmt, ...)
 	}
 }
 
-constexpr float MOD_LOADER_VERSION = 1.6f;
+constexpr float MOD_LOADER_VERSION = 1.7f;
 
 struct FileRead
 {
@@ -160,29 +160,57 @@ static loadSound_t oLoadSound = NULL;
 typedef int(__cdecl *criload_t)(int);
 static criload_t oCriFsFileLoad = NULL;
 
-int __cdecl hkCriFsFileLoad(int loader) // load here .usm
+#define CREATE_HOOK(ret, callconv, name, ...) typedef ret(callconv *name##_t)args; static name##_t o##name = NULL; ret callconv hk##name(__VA_ARGS__)
+
+#define CREATE_THISCALL(ret, thus, name, ...) typedef ret(__thiscall *name##_t)(thus, __VA_ARGS__); static name##_t o##name = NULL; ret __stdcall hk##name(__VA_ARGS__) {thus self; __asm {mov [self], ecx}
+
+CREATE_THISCALL(BOOL, Hw::cHeapVariable*, VariableCreate, size_t size, Hw::cHeap* heapowner, const char* targetAlloc)
+auto result = oVariableCreate(self, size, heapowner, targetAlloc);
+self->m_pReservedHeap = Hw::cHeapGlobal::get();
+return result;
+}
+
+CREATE_THISCALL(BOOL, Hw::cHeapPhysical*, PhysicalCreate, size_t size, Hw::cHeap* heapowner, const char* targetAlloc)
+auto result = oPhysicalCreate(self, size, heapowner, targetAlloc);
+self->m_pReservedHeap = Hw::cHeapGlobal::get();
+return result;
+}
+
+CREATE_THISCALL(BOOL, Hw::cHeapFixed*, FixedHeapCreate, size_t size, size_t allocSize, size_t preservedSize, Hw::cHeap* heapOwner, const char* target)
+auto result = oFixedHeapCreate(self, size, allocSize, preservedSize, heapOwner, target);
+self->m_pReservedHeap = Hw::cHeapGlobal::get();
+return result;
+}
+
+int __cdecl hkCriFsFileLoad(int loader) // load here .usm // I could use this function to load files through it, BUT as our Platinum Games perfectly did their heap managing, I need to implement loading for different loading function
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
 		if (*(int*)(loader + 0xB4) != 1u)
 			return 2;
 
-		const char* ext = strrchr(*(const char**)(loader + 0xEC), '.');
+		char* filepath = *(char**)(loader + 0xEC);
+
+		Utils::formatPath(filepath); // format it just in case CriWare doesn't
+
+		const char* ext = strrchr(filepath, '.');
 
 		if (!strcmp(ext, ".usm"))
 		{
-			char buffer[MAX_PATH];
-
 			for (auto& prof : ModLoader::Profiles)
 			{
 				if (!prof->m_bEnabled)
 					continue;
 
-				sprintf(buffer, "%s\\%s", prof->getMyPath().c_str(), *(const char**)(loader + 0xEC));
-				if (getFileSize(buffer) != -1)
+				auto file = prof->FindFile(filepath); 
+
+				if (!file) // If we didn't found any files in the folder, try to search the file outside
+					file = prof->FindFile(strrchr(filepath, '\\') ? strrchr(filepath, '\\') + 1 : nullptr);
+
+				if (file && strcmp(filepath, file->m_path)) // Replace once and do not spam into the log
 				{
-					LOGINFO("[CRIWARE ] Replacing %s -> %s...", *(char**)(loader + 0xEC), buffer);
-					strcpy(*(char**)(loader + 0xEC), buffer);
+					LOGINFO("[CRIWARE ] Replacing %s -> %s...", filepath, file->m_path);
+					strcpy(filepath, file->m_path);
 					break;
 				}
 			}
@@ -209,7 +237,6 @@ size_t __cdecl hkGetFilesize(const char* file)
 	auto size = oGetFilesize(file);
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
-		char buff[MAX_PATH];
 		if (size == 0)
 		{
 			for (auto& prof : ModLoader::Profiles)
@@ -217,9 +244,8 @@ size_t __cdecl hkGetFilesize(const char* file)
 				if (!prof->m_bEnabled)
 					continue;
 
-				sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), file);
-				if (auto fSize = getFileSize(buff); fSize != -1)
-					return fSize;
+				if (auto ffile = prof->FindFile(file); ffile)
+					return ffile->m_nSize;
 			}
 		}
 	}
@@ -232,27 +258,47 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad && !(ecx->m_nFileFlags & 0x10000)) 
 	{
-		char buff[MAX_PATH];
+		// Please fix the platinum fuck up in path
+		Utils::formatPath(ecx->m_FileName);
+
 		for (auto& prof : ModLoader::Profiles)
 		{
 			if (!prof->m_bEnabled)
 				continue;
 
-			char modName[128];
-			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), ecx->m_FileName);
-			sprintf(modName, "mods\\%s\\%s", prof->m_name, ecx->m_FileName);
+			auto ffile = prof->FindFile(ecx->m_FileName); 
+			if (!ffile) 
+				ffile = prof->FindFile(strrchr(ecx->m_FileName, '\\') ? strrchr(ecx->m_FileName, '\\') + 1 : nullptr); // Please someone teach the user to install mods...
 
-			if (auto fSize = getFileSize(buff); fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000))
+			if (auto fSize = ffile ? ffile->m_nSize : -1; fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000))
 			{
-				size_t fileSize = hkGetFilesize(ecx->m_FileName);
+				size_t fileSize = ecx->m_nFilesize;
 				// result = oLoad(a1, a2, path, a4, a5, size, a7, placeholder, a8, a9);
-				if (fileSize != fSize)
-					LOGINFO("[FILEREAD] Replacing %s(%.1fMB) -> %s(%.1fMB)", ecx->m_FileName, (float)(((float)ecx->m_nFilesize / 1024.f) / 1024.f), modName, (float)(((float)fSize / 1024.f) / 1024.f));
 
-				if (fileSize == fSize)
-					LOGINFO("[FILEREAD] Loading %s(%.1fMB)...", modName, ((float)fSize / 1024.f) / 1024.f);
+				if (fSize)
+				{
+					if (fileSize != fSize)
+						LOGINFO("[FILEREAD] Replacing %s(%s) -> %s(%s)", ecx->m_FileName, Utils::getProperSize(ecx->m_nFilesize).c_str(), ffile->m_path, Utils::getProperSize(fSize).c_str());
 
-				auto file = fopen(buff, "rb");
+					if (fileSize == fSize)
+						LOGINFO("[FILEREAD] Loading %s(%s)...", ffile->m_path, Utils::getProperSize(fSize).c_str());
+				}
+				else
+				{
+					LOGINFO("[FILEREAD] %s -> This file will not be loaded due to no size!", ffile->m_path);
+
+					FreeMemory(ecx->m_Placeholder, 0); // Clear the heap
+					ecx->m_Placeholder = nullptr;
+
+					ecx->m_nFilesize = fSize; // set size to zero
+
+					ecx->m_nWorkerState = 7; // Warn the manager that this file can't be loaded due to not having size
+					ecx->m_nWaitAmount = 0;
+
+					return 0;
+				}
+
+				auto file = fopen(ffile->m_path, "rb");
 				fseek(file, 0, SEEK_SET);
 
 				FreeMemory(ecx->m_Placeholder, 0); // free memory for allocator
@@ -262,7 +308,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 
 				if (!ecx->m_Placeholder)
 				{
-					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%.1fMB)!", modName, ((float)fSize / 1024.f) / 1024.f);
+					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%s)!", ffile->m_path, Utils::getProperSize(fSize).c_str());
 					ecx->cleanup();
 					ecx->m_nWorkerState = 1;
 					ecx->m_nFileFlags |= 0x10000; // hoping that it will load original file
@@ -294,47 +340,75 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 	return oLoad(ecx);
 }
 
+// FileRead::Work -> cDvdReader
+// cDvdReader is implementation of reader(from cpk's or from GameData)
+// FileRead::Work is used to load .dat files and so on(mainly .dat because its archive)
+
 int __fastcall hkDvdload(int ecx)
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
-		char buff[MAX_PATH];
+		Utils::formatPath((char*)(ecx + 0xC));
+
+		char* filename = (char*)(ecx + 0xC);
+		int &fileSize = *(int*)(ecx + 0x58);
+
 		for (auto& prof : ModLoader::Profiles)
 		{
 			if (!prof->m_bEnabled)
 				continue;
 
-			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), (char*)(ecx + 0xC));
-			char modName[128];
-			sprintf(modName, "mods\\%s\\%s", prof->m_name, (char*)(ecx + 0xC));
+			auto ffile = prof->FindFile(filename);
+			if (!ffile)
+				ffile = prof->FindFile(strrchr(filename, '\\') ? strrchr(filename, '\\') + 1 : nullptr);
 
-			if (auto size = getFileSize(buff); size != -1 && *(int*)(ecx + 0x54))
+			if (ffile && *(int*)(ecx + 0x54))
 			{
-				LOGINFO("[DVDREAD ] Replacing %s(%.1fMB) -> %s(%.1fMB)", (char*)(ecx + 0xC), ((float)(*(int*)(ecx + 0x58)) / 1024.f) / 1024.f, modName, ((float)size / 1024.f) / 1024.f);
-				auto file = fopen(buff, "rb");
-				fseek(file, 0, SEEK_SET);
+				auto size = ffile->m_nSize;
 
-				int block = *(int*)(ecx + 0x54) - 4;
-				Hw::cHeap* allocator = *(Hw::cHeap**)(block);
-
-				FreeMemory(*(void**)(ecx + 0x54), 0); // as in hkLoad
-				*(void**)(ecx + 0x54) = allocator->AllocateMemory(size, 4096u, 1, 0);
-
-				if (!*(void**)(ecx + 0x54))
+				if (size)
 				{
-					LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%.1fMB)!", modName, ((float)size / 1024.f) / 1024.f);
+					// Same size behavior
+
+					LOGINFO("[DVDREAD ] Replacing %s(%s) -> %s(%s)", filename, Utils::getProperSize(fileSize).c_str(), ffile->m_path, Utils::getProperSize(size).c_str());
+					auto file = fopen(ffile->m_path, "rb");
+					fseek(file, 0, SEEK_SET);
+
+					int block = *(int*)(ecx + 0x54) - 4;
+					Hw::cHeap* allocator = *(Hw::cHeap**)(block);
+
+					FreeMemory(*(void**)(ecx + 0x54), 0); // as in hkLoad
+					*(void**)(ecx + 0x54) = allocator->AllocateMemory(size, 4096u, 1, 0);
+
+					if (!*(void**)(ecx + 0x54))
+					{
+						LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%s)!", ffile->m_path, Utils::getProperSize(size).c_str());
+						fclose(file);
+						return 0;
+					}
+
+					fileSize = size;
+
+					memset(*(void**)(ecx + 0x54), 0, size);
+					fread(*(void**)(ecx + 0x54), 1u, size, file);
 					fclose(file);
+
+					*(int*)ecx = 5;
 					return 0;
 				}
+				else
+				{
+					if (*(void**)(ecx + 0x54))
+						FreeMemory(*(void**)(ecx + 0x54), 0);
 
-				*(int*)(ecx + 0x58) = size;
+					fileSize = 0;
 
-				memset(*(void**)(ecx + 0x54), 0, size);
-				fread(*(void**)(ecx + 0x54), 1u, size, file);
-				fclose(file);
+					*(int*)ecx = 5;
 
-				*(int*)ecx = 5;
-				return 0;
+					LOGINFO("No size for %s, aborting!", ffile->m_path);
+
+					return 0;
+				}
 			}
 		}
 	}
@@ -356,21 +430,28 @@ int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a
 			if (!prof->m_bEnabled)
 				continue;
 
-			char buff[MAX_PATH];
-			sprintf(buff, "%s\\%s", prof->getMyPath().c_str(), path);
-			if (getFileSize(buff) != -1)
+			auto file = prof->FindFile(path);
+
+			if (file)
 			{
 				if (((int(__cdecl*)(int*))(shared::base + 0xE971BB))((int*)(ecx + 4)) || !*(int*)(ecx + 4))
 				{
 					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
 					*(int*)(ecx + 4) = NULL;
 				}
-				char modname[128];
-				sprintf(modname, "mods\\%s\\%s", prof->m_name, path);
+				
+				char origPath[MAX_PATH];
+				
+				if (strncmp(path, (char*)(shared::base + 0x19D4158), strlen(path)))
+					sprintf(origPath, "%s%s", (char*)(shared::base + 0x19D4158), path);
+				else
+					sprintf(origPath, "%s", path);
 
-				if (!criFsBinder_bindCpk(*(int*)(ecx + 4), 0, buff, 0, 0, (int*)(ecx + 8)))
+				Utils::formatPath(origPath);
+
+				if (!criFsBinder_bindCpk(*(int*)(ecx + 4), 0, origPath, 0, 0, (int*)(ecx + 8)) && !criFsBinder_bindCpk(*(int*)(ecx + 4), 0, file->m_path, 0, 0, (int*)(ecx + 8)))
 				{
-					LOGINFO("[BINDCPK ] Mounted %s successfully!", modname);
+					LOGINFO("[BINDCPK ] Mounted %s as %s successfully", file->m_path, path);
 					*(int*)(ecx + 0xC) = 1;
 					*(int*)(ecx) = 2;
 					*(int*)(ecx + 0x10) = a5;
@@ -378,7 +459,7 @@ int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a
 				}
 				else
 				{
-					LOGERROR("[BINDCPK ] bindCpk failed somewhere?? %s", buff);
+					LOGERROR("[BINDCPK ] bindCpk failed somewhere?? %s", file->m_path);
 					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
 					*(int*)(ecx + 4) = NULL;
 					*(int*)(ecx) = NULL;
@@ -395,17 +476,24 @@ int __fastcall hkLoadSound(int ecx, void*, int pData, int pEnvData, int pLoaderD
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
-		char buffer[MAX_PATH];
 		for (auto& prof : ModLoader::Profiles)
 		{
 			if (!prof->m_bEnabled)
 				continue;
 
-			sprintf(buffer, "%s\\%s", prof->getMyPath().c_str(), *(char**)(pData + 0x10)); // replacing a path to a sound with a path to a modified .wem/.bnk, yet still loads
+			char* wemName = *(char**)(pData + 0x10);
 
-			if (getFileSize(buffer) != -1)
+			auto file = prof->FindFile(wemName);
+			if (!file)
+				file = prof->FindFile(strrchr(wemName, '\\') ? strrchr(wemName, '\\') + 1 : nullptr);
+
+			if (file)
 			{
-				strcpy(*(char**)(pData + 0x10), buffer);
+				if (strcmp(wemName, file->m_path))
+				{
+					LOGINFO("[LOADSND ] %s -> %s", wemName, file->m_path);
+					strcpy(wemName, file->m_path);
+				}
 				return oLoadSound(ecx, pData, pEnvData, pLoaderData);
 			}
 		}
@@ -427,7 +515,7 @@ bool CheckUpdates()
 	{
 		char str[16];
 		GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", "-1.0", str, sizeof(str), buff);
-		newVersion = atof(str);
+		newVersion = (float)atof(str);
 
 		if (newVersion > MOD_LOADER_VERSION)
 		{
@@ -515,6 +603,8 @@ void __cdecl criErr_Callback(const char* errId, unsigned int p1, unsigned int p2
 	LOGERROR("[CRIWARE ] %s", buff);
 }
 
+bool bShouldReload = false;
+
 class Plugin
 {
 public:
@@ -572,67 +662,74 @@ public:
 
 		Events::OnUpdateEvent += []()
 			{
-				if (bIsForegroundWindow && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false))
+				if (bIsForegroundWindow && g_GameMenuStatus == InMenu && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false))
+				{
 					gui::bShow ^= true;
+
+					if (bShouldReload && !gui::bShow)
+					{
+						((void(__cdecl*)())(shared::base + 0x5C9100))();
+						((void(__cdecl*)())(shared::base + 0x5825B0))();
+						*(int*)(shared::base + 0x175D1DC) = 1;
+					}
+				}
 			};
 
 		Events::OnMainCleanupEvent += []()
 			{
+				LOGINFO("[HEAPMGR ] Used memory: %d bytes", GetHeapManager()->m_nAllocated);
 				ModLoader::Save();
+
+				for (auto& prof : ModLoader::Profiles)
+					prof->Shutdown();
+
+				GetHeapManager()->shutdown();
+
 				closeLog();
 			};
 
-		// making each heap manager to have global heap manager as backup, making game load as much as it wants to
-		Events::OnGameStartupEvent += []()
-			{
-				static bool once = false;
-				if (!once)
-				{
-					auto heap = Hw::cHeapGlobal::get()->m_pPrev;
-					do
-					{
-						if (!heap->m_pReservedHeap && heap != Hw::cHeapGlobal::get())
-							heap->m_pReservedHeap = Hw::cHeapGlobal::get();
 
-						// LOGINFO("Set backup for %s", heap->m_TargetAlloc);
 
-						heap = heap->m_pNext;
-					} while (heap);
-					once = true;
-				}
-			};
+		/// Will not work for every heap
+		// // making each heap manager to have global heap manager as backup, making game load as much as it wants to
+		//Events::OnGameStartupEvent += []()
+		//	{
+		//		static bool once = false;
+		//		if (!once)
+		//		{
+		//			auto heap = Hw::cHeapGlobal::get()->m_pPrev;
+		//			do
+		//			{
+		//				if (!heap->m_pReservedHeap && heap != Hw::cHeapGlobal::get())
+		//					heap->m_pReservedHeap = Hw::cHeapGlobal::get();
 
-		LPVOID trg = (LPVOID)(shared::base + 0xA9E170);
-		MH_CreateHook(trg, hkLoad, (LPVOID*)&oLoad);
-		MH_EnableHook(trg);
-		
-		trg = (LPVOID)(shared::base + 0x9EAF60);
-		MH_CreateHook(trg, hkGetFilesize, (LPVOID*)&oGetFilesize);
-		MH_EnableHook(trg);
+		//				// LOGINFO("Set backup for %s", heap->m_TargetAlloc);
 
-		trg = (LPVOID)(shared::base + 0x9E9900);
-		MH_CreateHook(trg, hkDvdload, (LPVOID*)&oDvdload);
-		MH_EnableHook(trg);
+		//				heap = heap->m_pNext;
+		//			} while (heap);
+		//			once = true;
+		//		}
+		//	};
 
-		trg = (LPVOID)(shared::base + 0x9EAFB0);
-		MH_CreateHook(trg, hkBindCpk, (LPVOID*)&oBindCpk);
-		MH_EnableHook(trg);
-		
-		trg = (LPVOID)(shared::base + 0x9F1320);
-		MH_CreateHook(trg, hkLoadSound, (LPVOID*)&oLoadSound);
-		MH_EnableHook(trg);
+#define HOOK(target, hooked, original) MH_CreateHook((LPVOID)(target), hooked, (LPVOID*)&original); MH_EnableHook((LPVOID)(target));
 
-		trg = (LPVOID)(shared::base + 0xE9C0F6);
-		MH_CreateHook(trg, hkCriFsFileLoad, (LPVOID*)&oCriFsFileLoad);
-		MH_EnableHook(trg);
+		HOOK(shared::base + 0xA9E170, hkLoad, oLoad);
+		HOOK(shared::base + 0x9EAF60, hkGetFilesize, oGetFilesize);
+		HOOK(shared::base + 0x9E9900, hkDvdload, oDvdload);
+		HOOK(shared::base + 0x9EAFB0, hkBindCpk, oBindCpk);
+		HOOK(shared::base + 0x9F1320, hkLoadSound, oLoadSound);
+		HOOK(shared::base + 0xE9C0F6, hkCriFsFileLoad, oCriFsFileLoad);
+		HOOK(shared::base + 0x9EB160, hkDvdReadInit, oDvdReadInit);
 
-		trg = (LPVOID)(shared::base + 0x9EB160);
-		MH_CreateHook(trg, hkDvdReadInit, (LPVOID*)&oDvdReadInit);
-		MH_EnableHook(trg);
+		HOOK(shared::base + 0x9D39D0, hkVariableCreate, oVariableCreate);
+		HOOK(shared::base + 0x9D4130, hkPhysicalCreate, oPhysicalCreate);
+		HOOK(shared::base + 0x9D2AB0, hkFixedHeapCreate, oFixedHeapCreate);
 
 		*(CriErrCbFunc_t**)(shared::base + 0x1CAE15C) = (CriErrCbFunc_t*)criErr_Callback;
 
 		InitGUI();
+
+#undef HOOK
 
 	}
 } plugin;
@@ -724,11 +821,22 @@ void gui::RenderWindow()
 			{
 				if (ImGui::TreeNode(prof->m_name))
 				{
-					ImGui::Checkbox("Enabled", &prof->m_bEnabled);
+					if (ImGui::Checkbox("Enabled", &prof->m_bEnabled))
+					{
+						if (prof->m_bEnabled && !prof->m_bStarted)
+							prof->Restart();
+						else if (!prof->m_bEnabled)
+							prof->Shutdown(); // just shut it down(free memory)
+
+						bShouldReload = true;
+					}
+
 					if (ImGui::IsItemHovered())
 						ImGui::SetTooltip("Some mods require restarting game.");
 					if (ImGui::InputInt("Priority", &prof->m_nPriority))
 						ModLoader::SortProfiles();
+					if (prof->m_bEnabled)
+						ImGui::Text("Size: %s", Utils::getProperSize(prof->m_nTotalSize));
 					ImGui::TreePop();
 				}
 			}
@@ -736,15 +844,15 @@ void gui::RenderWindow()
 		}
 		if (ImGui::BeginTabItem("Mod Info"))
 		{
-			auto modifiedFile = 0;
-			auto loadedFiles = 0;
-			for (auto& file : FileRead::Manager::Instance.m_FileReaderVector)
-			{
-				modifiedFile += (file->m_nFileFlags & 0x8000) != 0;
-				loadedFiles += (file->m_nFileFlags & 0x4000) != 0;
-			}
 			if (ImGui::CollapsingHeader("Modified Files"))
 			{
+				auto modifiedFile = 0;
+				auto loadedFiles = 0;
+				for (auto& file : FileRead::Manager::Instance.m_FileReaderVector)
+				{
+					modifiedFile += (file->m_nFileFlags & 0x8000) != 0;
+					loadedFiles += (file->m_nFileFlags & 0x4000) != 0;
+				}
 				ImGui::Text("Modified files: %d\nLoaded Files: %d", modifiedFile, loadedFiles);
 				for (auto& file : FileRead::Manager::Instance.m_FileReaderVector)
 				{
@@ -752,6 +860,12 @@ void gui::RenderWindow()
 						ImGui::BulletText("%s", file->m_FileName);
 				}
 			}
+			long long totalSize = 0L;
+
+			for (auto& prof : ModLoader::Profiles)
+				totalSize += prof->m_nTotalSize;
+
+			ImGui::Text("Total size of enabled mods: %s", Utils::getProperSize(totalSize));
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("Settings"))

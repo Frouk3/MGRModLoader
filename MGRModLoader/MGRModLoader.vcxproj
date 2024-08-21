@@ -100,7 +100,7 @@
       <PrecompiledHeader>NotUsing</PrecompiledHeader>
       <PrecompiledHeaderFile>pch.h</PrecompiledHeaderFile>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(MGR_PLUGIN_SDK)shared;$(MGR_PLUGIN_SDK)game;$(DXSDK_DIR)lib\x86;$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(MGR_PLUGIN_SDK)shared;$(MGR_PLUGIN_SDK)game\Havok;$(MGR_PLUGIN_SDK)game;$(DXSDK_DIR)lib\x86;$(DXSDK_DIR)Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <Optimization>MinSpace</Optimization>
     </ClCompile>
@@ -191,6 +191,9 @@
     <ClCompile Include="src\hook.c" />
     <ClCompile Include="ModLoader.cpp" />
     <ClCompile Include="src\trampoline.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <Text Include="notes.md" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
