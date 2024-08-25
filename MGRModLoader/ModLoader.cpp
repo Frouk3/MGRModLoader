@@ -301,16 +301,19 @@ void ModLoader::ModProfile::Startup()
 			m_files.m_nCapacity = m_files.m_nSize;
 		}
 
-		for (const auto &dll : *m_ModInfo->m_pDLLs)
+		if (m_ModInfo->m_pDLLs)
 		{
-			auto file = FindFile(dll.c_str());
-
-			if (file)
+			for (const auto& dll : *m_ModInfo->m_pDLLs)
 			{
-				if (LoadLibraryA(file->m_path))
-					LOGINFO("%s -> LoadLibrary(%s) successful", m_name, dll.c_str());
-				else
-					LOGINFO("%s failed to load %s", dll.c_str());
+				auto file = FindFile(dll.c_str());
+
+				if (file)
+				{
+					if (LoadLibraryA(file->m_path))
+						LOGINFO("%s -> LoadLibrary(%s) successful", m_name, dll.c_str());
+					else
+						LOGINFO("%s failed to load %s", dll.c_str());
+				}
 			}
 		}
 	}
