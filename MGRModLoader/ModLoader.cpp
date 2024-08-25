@@ -301,7 +301,7 @@ void ModLoader::ModProfile::Startup()
 			m_files.m_nCapacity = m_files.m_nSize;
 		}
 
-		if (m_ModInfo->m_pDLLs)
+		if (m_bEnabled && m_ModInfo->m_pDLLs)
 		{
 			for (const auto& dll : *m_ModInfo->m_pDLLs)
 			{
