@@ -6,16 +6,25 @@
 #include <common.h>
 #include <ini.h>
 
-inline cHeapManager* GetHeapManager()
-{
-	static cHeapManager manager;
-
-	return &manager;
-}
-
 extern BOOL FileExists(const char* filename);
 
 namespace fs = std::filesystem;
+
+template <typename T>
+void reallocateVector(Hw::cFixedVector<T>& vector, size_t newSize)
+{
+	auto newVector = (T*)malloc(sizeof(T) * newSize);
+	
+	if (newVector)
+	{
+		for (int i = 0; i < vector.m_nSize; i++)
+			newVector[i] = vector.m_pBegin[i];
+
+		vector.m_nCapacity = newSize;
+		free(vector.m_pBegin);
+		vector.m_pBegin = newVector;
+	}
+}
 
 void openProfiles(const char *directory)
 {
@@ -23,7 +32,7 @@ void openProfiles(const char *directory)
 	HANDLE hFind = (HANDLE)-1;
 	char searchPath[MAX_PATH];
 
-	LOGINFO("Reading profiles...")
+	LOGINFO("Reading profiles...");
 
 	sprintf(searchPath, "%s\\*", directory);
 
@@ -42,13 +51,12 @@ void openProfiles(const char *directory)
 			{
 				if (strlen(fd.cFileName) < 64u)
 				{
-					ModLoader::ModProfile* prof = GetHeapManager()->allocate<ModLoader::ModProfile>();
+					auto prof = new ModLoader::ModProfile(fd.cFileName);
 					if (prof)
 					{
-						*prof = ModLoader::ModProfile(fd.cFileName);
 						ModLoader::Profiles.push_back(prof);
 						prof->Load(prof->m_name);
-						LOGINFO("Loading %s(%s, %d)", prof->m_name, prof->m_bEnabled ? "Enabled" : "Disabled", prof->m_nPriority);
+						LOGINFO("Loading %s(%s, %d)", prof->m_name.c_str(), prof->m_bEnabled ? "Enabled" : "Disabled", prof->m_nPriority);
 					}
 				}
 				else
@@ -118,7 +126,7 @@ inline LONGLONG GetLongFromLargeInteger(DWORD LowPart, DWORD HighPart)
 	return l.QuadPart;
 }
 
-void findFiles(const char* directory, Hw::cFixedVector<ModLoader::ModProfile::File *>& files, const bool bInSubFolder = false)
+void findFiles(const char* directory, Hw::cFixedVector<ModLoader::ModProfile::File *>& files, ModLoader::ModProfile *profile, const bool bInSubFolder = false)
 {
 	WIN32_FIND_DATA fd;
 	HANDLE hFind = INVALID_HANDLE_VALUE;
@@ -134,33 +142,32 @@ void findFiles(const char* directory, Hw::cFixedVector<ModLoader::ModProfile::Fi
 	}
 	do
 	{
-		if (strncmp(fd.cFileName, ".", 1u) && strncmp(fd.cFileName, "..", 2u))
+		if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
 		{
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+			if (fd.cFileName[0] != '.' && fd.cFileName[1] != '.')
+			{
+				auto file = new ModLoader::ModProfile::File();
+				if (file)
+				{
+					char path[MAX_PATH];
+
+					sprintf(path, "%s\\%s", directory, fd.cFileName);
+
+					file->File::File(GetLongFromLargeInteger(fd.nFileSizeLow, fd.nFileSizeHigh), path);
+					files.push_back(file);
+					// LOGINFO("%s -> %s [%s]", profile->m_name.c_str(), path, Utils::getProperSize(file->m_nSize).c_str());
+					profile->m_nTotalSize += file->m_nSize;
+				}
+			}
+		}
+		else
+		{
+			if (fd.cFileName[0] != '.' && fd.cFileName[1] != '.')
 			{
 				char directoryPath[MAX_PATH];
 
 				sprintf(directoryPath, "%s\\%s", directory, fd.cFileName);
-				findFiles(directoryPath, files, true);
-			}
-			else
-			{
-				char path[MAX_PATH];
-
-				sprintf(path, "%s\\%s", directory, fd.cFileName);
-
-				auto fileSize = GetLongFromLargeInteger(fd.nFileSizeLow, fd.nFileSizeHigh);
-
-				auto file = GetHeapManager()->allocate<ModLoader::ModProfile::File>();
-
-				if (file)
-				{
-					*file = ModLoader::ModProfile::File(fileSize, path);
-
-					file->m_bInSubFolder = bInSubFolder;
-
-					files.push_back(file);
-				}
+				findFiles(directoryPath, files, profile, true);
 			}
 		}
 
@@ -177,12 +184,9 @@ void ModLoader::startup()
 	int enabledMods = 0;
 	for (auto& profile : Profiles)
 	{
-		if (profile->m_bEnabled)
-		{
-			LOGINFO("%s -> Startup", profile->m_name);
-			profile->Startup();
-			enabledMods++;
-		}
+		LOGINFO("%s -> Startup", profile->m_name.c_str());
+		profile->Startup();
+		if (profile->m_bEnabled) enabledMods++;
 	}
 	openScripts();
 	LOGINFO("%d mod profiles loaded!", Profiles.m_nSize);
@@ -200,7 +204,7 @@ void ModLoader::SortProfiles()
 	{
 		for (int j = 0; j < Profiles.m_nSize - i - 1; j++)
 		{
-			auto arr = Profiles.m_pStart;
+			auto arr = Profiles.m_pBegin;
 			if (arr[j]->m_nPriority < arr[j + 1]->m_nPriority)
 			{
 				auto temp = arr[j];
@@ -241,9 +245,10 @@ void ModLoader::Save()
 	fclose(profileFile);
 }
 
-std::string ModLoader::getModFolder()
+Utils::String ModLoader::getModFolder()
 {
-	return std::string(path) + "\\mods";
+	auto res = Utils::String(path) + "\\mods\\";
+	return res;
 }
 
 void ModLoader::ModProfile::Load(const char* name)
@@ -260,7 +265,7 @@ void ModLoader::ModProfile::Startup()
 	{
 		if (!m_files.m_pBegin)
 		{
-			m_files.m_pBegin = (File**)GetHeapManager()->allocate(sizeof(File*) * 1024);
+			m_files.m_pBegin = (File**)malloc(sizeof(File*) * 1024);
 			if (m_files.m_pBegin)
 			{
 				m_files.m_nCapacity = 1024;
@@ -275,14 +280,38 @@ void ModLoader::ModProfile::Startup()
 
 		ReadFiles();
 
-		if (m_files.m_pBegin)
+		if (auto file = FindFile("mod.ini"); file)
 		{
-			for (auto file : m_files)
+			m_ModInfo = new ModExtraInfo();
+
+			if (m_ModInfo)
+				m_ModInfo->load(file);
+		}
+
+		auto newArray = (File**)malloc(sizeof(File*) * m_files.m_nSize);
+
+		if (newArray)
+		{
+			for (int i = 0; i < m_files.m_nSize; i++)
+				newArray[i] = m_files.m_pBegin[i];
+
+			free(m_files.m_pBegin);
+
+			m_files.m_pBegin = newArray;
+			m_files.m_nCapacity = m_files.m_nSize;
+		}
+
+		for (const auto &dll : *m_ModInfo->m_pDLLs)
+		{
+			auto file = FindFile(dll.c_str());
+
+			if (file)
 			{
-				m_nTotalSize += file->m_nSize;
-				LOGINFO("%s -> %s [%s]", m_name, file->m_path, Utils::getProperSize(file->m_nSize).c_str());
+				if (LoadLibraryA(file->m_path))
+					LOGINFO("%s -> LoadLibrary(%s) successful", m_name, dll.c_str());
+				else
+					LOGINFO("%s failed to load %s", dll.c_str());
 			}
-			LOGINFO("%s -> Size: %s", m_name, Utils::getProperSize(m_nTotalSize).c_str());
 		}
 	}
 
@@ -300,16 +329,15 @@ void ModLoader::ModProfile::Restart()
 
 void ModLoader::ModProfile::ReadFiles()
 {
-	char directory[MAX_PATH];
-
-	sprintf(directory, "%s", getMyPath().c_str());
-
-	findFiles(directory, m_files);
+	findFiles(getMyPath().c_str(), m_files, this, false);
 }
 
 void ModLoader::ModProfile::Save()
 {
-	LOGINFO("Saving %s...", this->m_name)
+	if (!ModLoader::bInit)
+		return;
+
+	LOGINFO("Saving %s...", this->m_name.c_str());
 	IniReader prof(getModFolder() + "\\profiles.ini");
 
 	prof.WriteBool(this->m_name, "Enabled", this->m_bEnabled);

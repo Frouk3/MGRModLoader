@@ -1,8 +1,8 @@
 # Plans
 - [ ] Figure out how to load files without packing .dat/.dtt
 - [ ] Fix Mod Loader not loading cpk properly and create binder for each cpk
-- [ ] Read every cpk and bind them right away
-- [ ] Add RMM compatability
+- [x] Read every cpk and bind them right away
+- [x] Add RMM compatability(almost)
 # "Fuck around and find out"
 As [Aura](https://github.com/Aura39) said, to add or replace files of the dat file we need to read dat file at once, add entries, and rebuild the dat
 

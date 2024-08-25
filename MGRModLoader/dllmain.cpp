@@ -15,6 +15,72 @@ char LOG_PATH[MAX_PATH];
 
 FILE* logFile = nullptr;
 
+#define criFsBinder_create(binderPtr) ((int(__cdecl *)(int*))(shared::base + 0xE971BB))(binderPtr)
+#define criFsBinder_free(binderPtr) ((int(__cdecl *)(int))(shared::base + 0xE97C59))(binderPtr)
+#define criFsBinder_GetStatus(a1, status) ((int(__cdecl *)(int, int *))(shared::base + 0xE97D56))(a1, status)
+#define criFsBinder_bindCpk(binderHn, srcBinderHn, path, work, worksize, binderId) ((int(__cdecl*)(int, int, const char*, void*, CriSint32, int*))(shared::base + 0xE98448))(binderHn, srcBinderHn, path, work, worksize, binderId)
+
+typedef unsigned int CriUint32;
+typedef signed int CriSint32;
+
+struct CriFsConfig
+{
+	CriUint32 thread_model;
+	CriSint32 num_binders;
+	CriSint32 num_loaders;
+	CriSint32 num_group_loaders;
+	CriSint32 num_stdio_handles;
+	CriSint32 num_installers;
+	CriSint32 max_binds;
+	CriSint32 max_files;
+	CriSint32 max_path;
+};
+
+namespace CRI
+{
+	struct criFsBinderWork
+	{
+		int m_nStatus;
+		int m_CriBinder;
+		int m_BinderId;
+		int m_nBindStatus;
+		int m_nPriority;
+
+		criFsBinderWork()
+		{
+			m_nStatus = 0;
+			m_CriBinder = 0;
+
+			m_nBindStatus = 6;
+			m_nPriority = -1;
+		}
+	};
+
+	lib::StaticArray<criFsBinderWork, 256> m_binders;
+
+	criFsBinderWork *getFreeBinder()
+	{
+		criFsBinderWork* binder = nullptr;
+		if (m_binders.m_nSize < m_binders.m_nCapacity)
+			binder = &m_binders[m_binders.m_nSize++];
+
+		if (binder)
+			*binder = criFsBinderWork();
+		
+		return binder;
+	}
+
+	void freeBinder(criFsBinderWork& binder)
+	{
+		if (binder.m_CriBinder)
+			criFsBinder_free(binder.m_CriBinder);
+	}
+
+	inline int cpkAmount = 0;
+};
+
+#define HwCDvdFst_getSourceBinder(path) ((CRI::criFsBinderWork *(__cdecl *)(char*))(shared::base + 0x9EAED0))(path)
+
 void openLog()
 {
 	if (!logFile)
@@ -65,7 +131,7 @@ inline void __cdecl dbgPrint(const char* fmt, ...)
 	}
 }
 
-constexpr float MOD_LOADER_VERSION = 1.7f;
+constexpr float MOD_LOADER_VERSION = 1.8f;
 
 struct FileRead
 {
@@ -151,7 +217,7 @@ static getFilesize_t oGetFilesize = NULL;
 typedef int(__thiscall*dvdload_t)(int ecx);
 static dvdload_t oDvdload = NULL;
 
-typedef int(__thiscall* bindCpkMaybe_t)(int, const char* path, int, int, int);
+typedef int(__cdecl* bindCpkMaybe_t)();
 static bindCpkMaybe_t oBindCpk = NULL;
 
 typedef int(__thiscall* loadSound_t)(int ecx, int pData, int pEnvData, int pLoaderData);
@@ -160,7 +226,7 @@ static loadSound_t oLoadSound = NULL;
 typedef int(__cdecl *criload_t)(int);
 static criload_t oCriFsFileLoad = NULL;
 
-#define CREATE_HOOK(ret, callconv, name, ...) typedef ret(callconv *name##_t)args; static name##_t o##name = NULL; ret callconv hk##name(__VA_ARGS__)
+#define CREATE_HOOK(ret, callconv, name, ...) typedef ret(callconv *name##_t)(__VA_ARGS__); static name##_t o##name = NULL; ret callconv hk##name(__VA_ARGS__)
 
 #define CREATE_THISCALL(ret, thus, name, ...) typedef ret(__thiscall *name##_t)(thus, __VA_ARGS__); static name##_t o##name = NULL; ret __stdcall hk##name(__VA_ARGS__) {thus self; __asm {mov [self], ecx}
 
@@ -195,14 +261,14 @@ int __cdecl hkCriFsFileLoad(int loader) // load here .usm // I could use this fu
 
 		const char* ext = strrchr(filepath, '.');
 
-		if (!strcmp(ext, ".usm"))
+		if (!strcmp(ext, ".usm")/* || !strcmp(ext, ".wem")*/)
 		{
 			for (auto& prof : ModLoader::Profiles)
 			{
 				if (!prof->m_bEnabled)
 					continue;
 
-				auto file = prof->FindFile(filepath); 
+				auto file = prof->FindFile(filepath);
 
 				if (!file) // If we didn't found any files in the folder, try to search the file outside
 					file = prof->FindFile(strrchr(filepath, '\\') ? strrchr(filepath, '\\') + 1 : nullptr);
@@ -232,28 +298,27 @@ BOOL __fastcall hkDvdReadInit(int ecx, void*, const char* filepath, void* fileda
 	return oDvdReadInit(ecx, filepath, filedata, buffSize, a5);
 }
 
-size_t __cdecl hkGetFilesize(const char* file)
+size_t __cdecl hkGetFilesize(const char* file) // PgIOHookDefferedCRI also uses this function to tell what size should buffer take
 {
 	auto size = oGetFilesize(file);
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
-		if (size == 0)
+		auto extension = strrchr(file, '.');
+		if (size == 0 || !strcmp(extension, ".wem"))
 		{
 			for (auto& prof : ModLoader::Profiles)
 			{
 				if (!prof->m_bEnabled)
 					continue;
 
-				if (auto ffile = prof->FindFile(file); ffile)
-					return ffile->m_nSize;
+				if (auto ffile = prof->FindFile(file) ? prof->FindFile(file) : prof->FindFile(strrchr(file, '\\') ? strrchr(file, '\\') + 1 : nullptr); ffile && ffile->m_nSize)
+					return (int)ffile->m_nSize;
 			}
 		}
 	}
 	return size;
 }
 
-
-// TODO: Load file data from threads
 int __fastcall hkLoad(FileRead::Work* ecx)
 {
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad && !(ecx->m_nFileFlags & 0x10000)) 
@@ -266,11 +331,11 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 			if (!prof->m_bEnabled)
 				continue;
 
-			auto ffile = prof->FindFile(ecx->m_FileName); 
-			if (!ffile) 
-				ffile = prof->FindFile(strrchr(ecx->m_FileName, '\\') ? strrchr(ecx->m_FileName, '\\') + 1 : nullptr); // Please someone teach the user to install mods...
+			auto file = prof->FindFile(ecx->m_FileName); 
+			if (!file) 
+				file = prof->FindFile(strrchr(ecx->m_FileName, '\\') ? strrchr(ecx->m_FileName, '\\') + 1 : nullptr); // Please someone teach the user to install mods...
 
-			if (auto fSize = ffile ? ffile->m_nSize : -1; fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000))
+			if (auto fSize = file ? file->m_nSize : -1; fSize != -1 && ecx->m_Placeholder && !(ecx->m_nFileFlags & 0x8000))
 			{
 				size_t fileSize = ecx->m_nFilesize;
 				// result = oLoad(a1, a2, path, a4, a5, size, a7, placeholder, a8, a9);
@@ -278,14 +343,14 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 				if (fSize)
 				{
 					if (fileSize != fSize)
-						LOGINFO("[FILEREAD] Replacing %s(%s) -> %s(%s)", ecx->m_FileName, Utils::getProperSize(ecx->m_nFilesize).c_str(), ffile->m_path, Utils::getProperSize(fSize).c_str());
+						LOGINFO("[FILEREAD] Replacing %s(%s) -> %s(%s)", ecx->m_FileName, Utils::getProperSize(ecx->m_nFilesize).c_str(), file->m_path, Utils::getProperSize(fSize).c_str());
 
 					if (fileSize == fSize)
-						LOGINFO("[FILEREAD] Loading %s(%s)...", ffile->m_path, Utils::getProperSize(fSize).c_str());
+						LOGINFO("[FILEREAD] Loading %s(%s)...", file->m_path, Utils::getProperSize(fSize).c_str());
 				}
 				else
 				{
-					LOGINFO("[FILEREAD] %s -> This file will not be loaded due to no size!", ffile->m_path);
+					LOGINFO("[FILEREAD] %s -> This file will not be loaded due to no size!", file->m_path);
 
 					FreeMemory(ecx->m_Placeholder, 0); // Clear the heap
 					ecx->m_Placeholder = nullptr;
@@ -298,9 +363,6 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 					return 0;
 				}
 
-				auto file = fopen(ffile->m_path, "rb");
-				fseek(file, 0, SEEK_SET);
-
 				FreeMemory(ecx->m_Placeholder, 0); // free memory for allocator
 				ecx->m_Placeholder = nullptr;
 
@@ -308,12 +370,11 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 
 				if (!ecx->m_Placeholder)
 				{
-					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%s)!", ffile->m_path, Utils::getProperSize(fSize).c_str());
+					LOGERROR("[FILEREAD] Failed to allocate memory for %s(%s)!", file->m_path, Utils::getProperSize(fSize).c_str());
 					ecx->cleanup();
 					ecx->m_nWorkerState = 1;
 					ecx->m_nFileFlags |= 0x10000; // hoping that it will load original file
 					ecx->m_nWaitAmount = 0;
-					fclose(file);
 					return 1;
 				}
 
@@ -322,8 +383,7 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 
 				ecx->m_nFilesize = fSize;
 
-				fread(ecx->m_Placeholder, 1u, fSize, file);
-				fclose(file);
+				file->read(ecx->m_Placeholder);
 
 				ecx->m_nFileFlags |= 0x8000; // was modified by 
 
@@ -358,21 +418,19 @@ int __fastcall hkDvdload(int ecx)
 			if (!prof->m_bEnabled)
 				continue;
 
-			auto ffile = prof->FindFile(filename);
-			if (!ffile)
-				ffile = prof->FindFile(strrchr(filename, '\\') ? strrchr(filename, '\\') + 1 : nullptr);
+			auto file = prof->FindFile(filename);
+			if (!file)
+				file = prof->FindFile(strrchr(filename, '\\') ? strrchr(filename, '\\') + 1 : nullptr);
 
-			if (ffile && *(int*)(ecx + 0x54))
+			if (file && *(int*)(ecx + 0x54))
 			{
-				auto size = ffile->m_nSize;
+				auto size = file->m_nSize;
 
 				if (size)
 				{
 					// Same size behavior
 
-					LOGINFO("[DVDREAD ] Replacing %s(%s) -> %s(%s)", filename, Utils::getProperSize(fileSize).c_str(), ffile->m_path, Utils::getProperSize(size).c_str());
-					auto file = fopen(ffile->m_path, "rb");
-					fseek(file, 0, SEEK_SET);
+					LOGINFO("[DVDREAD ] Replacing %s(%s) -> %s(%s)", filename, Utils::getProperSize(fileSize).c_str(), file->m_path, Utils::getProperSize(size).c_str());
 
 					int block = *(int*)(ecx + 0x54) - 4;
 					Hw::cHeap* allocator = *(Hw::cHeap**)(block);
@@ -382,16 +440,13 @@ int __fastcall hkDvdload(int ecx)
 
 					if (!*(void**)(ecx + 0x54))
 					{
-						LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%s)!", ffile->m_path, Utils::getProperSize(size).c_str());
-						fclose(file);
+						LOGERROR("[DVDREAD ] Failed to allocate memory for %s(%s)!", file->m_path, Utils::getProperSize(size).c_str());
 						return 0;
 					}
 
 					fileSize = size;
 
-					memset(*(void**)(ecx + 0x54), 0, size);
-					fread(*(void**)(ecx + 0x54), 1u, size, file);
-					fclose(file);
+					file->read(*(void**)(ecx + 0x54));
 
 					*(int*)ecx = 5;
 					return 0;
@@ -405,7 +460,7 @@ int __fastcall hkDvdload(int ecx)
 
 					*(int*)ecx = 5;
 
-					LOGINFO("No size for %s, aborting!", ffile->m_path);
+					LOGINFO("No size for %s, aborting!", file->m_path);
 
 					return 0;
 				}
@@ -416,64 +471,97 @@ int __fastcall hkDvdload(int ecx)
 	return oDvdload(ecx);
 }
 
-int __cdecl criFsBinder_bindCpk(int a1, int a2, const char* Str, char* a4, size_t Size, int * a6)
+int __cdecl hkBindCpk()
 {
-	return ((int(__cdecl*)(int, int, const char*, char*, size_t, int*))(shared::base + 0xE98448))(a1, a2, Str, a4, Size, a6);
-}
-
-int __fastcall hkBindCpk(int ecx, void*, const char* path, int a3, int a4, int a5)
-{
-	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
+	auto result = oBindCpk();
+	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad && CRI::cpkAmount)
 	{
-		for (auto& prof : ModLoader::Profiles)
+		// Firstly, remove all the binders if they exist
+
+		if (CRI::m_binders.m_nSize)
 		{
-			if (!prof->m_bEnabled)
-				continue;
-
-			auto file = prof->FindFile(path);
-
-			if (file)
+			for (int i = 0; i < CRI::m_binders.m_nSize; i++)
 			{
-				if (((int(__cdecl*)(int*))(shared::base + 0xE971BB))((int*)(ecx + 4)) || !*(int*)(ecx + 4))
-				{
-					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
-					*(int*)(ecx + 4) = NULL;
-				}
-				
-				char origPath[MAX_PATH];
-				
-				if (strncmp(path, (char*)(shared::base + 0x19D4158), strlen(path)))
-					sprintf(origPath, "%s%s", (char*)(shared::base + 0x19D4158), path);
-				else
-					sprintf(origPath, "%s", path);
-
-				Utils::formatPath(origPath);
-
-				if (!criFsBinder_bindCpk(*(int*)(ecx + 4), 0, origPath, 0, 0, (int*)(ecx + 8)) && !criFsBinder_bindCpk(*(int*)(ecx + 4), 0, file->m_path, 0, 0, (int*)(ecx + 8)))
-				{
-					LOGINFO("[BINDCPK ] Mounted %s as %s successfully", file->m_path, path);
-					*(int*)(ecx + 0xC) = 1;
-					*(int*)(ecx) = 2;
-					*(int*)(ecx + 0x10) = a5;
-					return 1;
-				}
-				else
-				{
-					LOGERROR("[BINDCPK ] bindCpk failed somewhere?? %s", file->m_path);
-					((int(__cdecl*)(int))(shared::base + 0xE97C59))(*(int*)(ecx + 4));
-					*(int*)(ecx + 4) = NULL;
-					*(int*)(ecx) = NULL;
-					*(int*)(ecx + 0x10) = NULL;
-					return 0;
-				}
+				CRI::freeBinder(CRI::m_binders[i]);
 			}
 		}
+
+		CRI::m_binders.m_nSize = 0;
+
+		for (auto& profile : ModLoader::Profiles)
+		{
+			if (!profile->m_bEnabled)
+				continue;
+
+			profile->FileWalk([&](ModLoader::ModProfile::File* file)
+				{
+					if (!strcmp(Utils::strlow(&file->m_path[strlen(file->m_path) - 4]), ".cpk") && file->m_nSize)
+					{
+						auto binder = CRI::getFreeBinder();
+						if (binder)
+						{
+							if (binder->m_nStatus)
+								return;
+
+							auto fsBinder = &binder->m_CriBinder;
+
+							if (criFsBinder_create(&binder->m_CriBinder) || !fsBinder)
+							{
+								criFsBinder_free(binder->m_CriBinder);
+								binder->m_CriBinder = 0;
+							}
+
+							auto srcBinder = HwCDvdFst_getSourceBinder(file->m_path);
+
+							if (criFsBinder_bindCpk(*fsBinder, srcBinder ? srcBinder->m_CriBinder : 0, file->m_path, 0, 0, &binder->m_BinderId))
+							{
+								LOGERROR("[BINDCPK ] Sync failed to bind %s", file->m_path);
+								if (*fsBinder)
+								{
+									criFsBinder_free(*fsBinder);
+									*fsBinder = NULL;
+
+									binder->m_nStatus = 0;
+									binder->m_nPriority = -1;
+								}
+							}
+							else
+							{
+								binder->m_nBindStatus = 1;
+								binder->m_nStatus = 2;
+								binder->m_nPriority = 0;
+
+								while (binder->m_nBindStatus == 1)
+								{
+									if (criFsBinder_GetStatus(binder->m_BinderId, &binder->m_nBindStatus) || binder->m_nBindStatus != 1 && binder->m_nBindStatus != 2)
+									{
+										if (binder->m_CriBinder)
+										{
+											criFsBinder_free(binder->m_CriBinder);
+											binder->m_CriBinder = 0;
+										}
+										binder->m_nStatus = 0;
+										binder->m_nPriority = -1;
+									}
+								}
+
+								if (binder->m_nBindStatus == 2)
+								{
+									LOGINFO("[BINDCPK ] %s is bound successfully!", file->m_path);
+									binder->m_nStatus = 2;
+								}
+							}
+						}
+					}
+				});
+		}
 	}
-	return oBindCpk(ecx, path, a3, a4, a5);
+	return result;
 }
 
-int __fastcall hkLoadSound(int ecx, void*, int pData, int pEnvData, int pLoaderData)
+int __fastcall hkLoadSound(const int ecx, void*, const int pData, const int pEnvData, const int pLoaderData)
 {
+	// LOGINFO("[LOADSND ] AK::StreamMgr -> %s", *(char**)(pData + 0x10));
 	if (ModLoader::bInit && !ModLoader::bIgnoreDATLoad)
 	{
 		for (auto& prof : ModLoader::Profiles)
@@ -616,9 +704,7 @@ public:
 	}
 
 	Plugin()
-	{
-		GetHeapManager()->create("GLOBAL");
-		
+	{	
 		GetCurrentDirectoryA(sizeof(ModLoader::path), ModLoader::path);
 
 		sprintf(LOG_PATH, "%s\\LoaderLog.txt", ModLoader::path);
@@ -666,27 +752,46 @@ public:
 				{
 					gui::bShow ^= true;
 
-					if (bShouldReload && !gui::bShow)
-					{
-						((void(__cdecl*)())(shared::base + 0x5C9100))();
-						((void(__cdecl*)())(shared::base + 0x5825B0))();
-						*(int*)(shared::base + 0x175D1DC) = 1;
-					}
+					//if (bShouldReload && !gui::bShow)
+					//{
+					//	/*((void(__cdecl*)())(shared::base + 0x5C9100))();
+					//	((void(__cdecl*)())(shared::base + 0x5825B0))();*/
+
+					//	((void(__thiscall*)(void*, unsigned int, const char*, int))(shared::base + 0x64AC40))((void*)(shared::base + 0x17E8E40), 0xF01, "START", -1);
+
+					//	bShouldReload = false;
+					//}
 				}
 			};
 
 		Events::OnMainCleanupEvent += []()
 			{
-				LOGINFO("[HEAPMGR ] Used memory: %d bytes", GetHeapManager()->m_nAllocated);
 				ModLoader::Save();
 
 				for (auto& prof : ModLoader::Profiles)
 					prof->Shutdown();
 
-				GetHeapManager()->shutdown();
-
 				closeLog();
 			};
+
+		for (auto& prof : ModLoader::Profiles)
+		{
+			prof->FileWalk([&](ModLoader::ModProfile::File* file)
+				{
+					if (!strcmp(Utils::strlow(&file->m_path[strlen(file->m_path) - 4]), ".cpk") && file->m_nSize)
+					{
+						CRI::cpkAmount += 1;
+					}
+				});
+		}
+
+		LOGINFO("Total of %d .cpk's", CRI::cpkAmount);
+
+		{
+			injector::scoped_unprotect vp(shared::base + 0x14CDE20, 4u);
+
+			*(int*)(shared::base + 0x14CDE20) += CRI::cpkAmount;
+		}
 
 
 
@@ -716,7 +821,7 @@ public:
 		HOOK(shared::base + 0xA9E170, hkLoad, oLoad);
 		HOOK(shared::base + 0x9EAF60, hkGetFilesize, oGetFilesize);
 		HOOK(shared::base + 0x9E9900, hkDvdload, oDvdload);
-		HOOK(shared::base + 0x9EAFB0, hkBindCpk, oBindCpk);
+		HOOK(shared::base + 0x5825B0, hkBindCpk, oBindCpk);
 		HOOK(shared::base + 0x9F1320, hkLoadSound, oLoadSound);
 		HOOK(shared::base + 0xE9C0F6, hkCriFsFileLoad, oCriFsFileLoad);
 		HOOK(shared::base + 0x9EB160, hkDvdReadInit, oDvdReadInit);
@@ -819,15 +924,33 @@ void gui::RenderWindow()
 		{
 			for (auto& prof : ModLoader::Profiles)
 			{
-				if (ImGui::TreeNode(prof->m_name))
+				Utils::String treeNodeName;
+
+				treeNodeName = prof->m_name;
+
+				if (prof->m_ModInfo && prof->m_ModInfo->m_title && prof->m_ModInfo->m_author && prof->m_ModInfo->m_version)
 				{
+					treeNodeName.format("%s(%s) : %s", prof->m_ModInfo->m_title.c_str(), prof->m_ModInfo->m_version.c_str(), prof->m_ModInfo->m_author.c_str());
+				}
+
+				if (ImGui::TreeNode(treeNodeName))
+				{
+					if (prof->m_ModInfo)
+					{
+						if (prof->m_ModInfo->m_description)
+							ImGui::TextUnformatted(prof->m_ModInfo->m_description.c_str());
+						if (prof->m_ModInfo->m_date)
+							ImGui::Text("Last time updated: %s", prof->m_ModInfo->m_date.c_str());
+
+						if (prof->m_ModInfo->m_author && prof->m_ModInfo->m_authorURL)
+						{
+							if (ImGui::Button(prof->m_ModInfo->m_author.c_str()))
+								ShellExecuteA(NULL, "open", prof->m_ModInfo->m_authorURL.c_str(), NULL, NULL, NULL);
+						}
+					}
+
 					if (ImGui::Checkbox("Enabled", &prof->m_bEnabled))
 					{
-						if (prof->m_bEnabled && !prof->m_bStarted)
-							prof->Restart();
-						else if (!prof->m_bEnabled)
-							prof->Shutdown(); // just shut it down(free memory)
-
 						bShouldReload = true;
 					}
 
@@ -835,8 +958,8 @@ void gui::RenderWindow()
 						ImGui::SetTooltip("Some mods require restarting game.");
 					if (ImGui::InputInt("Priority", &prof->m_nPriority))
 						ModLoader::SortProfiles();
-					if (prof->m_bEnabled)
-						ImGui::Text("Size: %s", Utils::getProperSize(prof->m_nTotalSize));
+					
+					ImGui::Text("Size: %s", Utils::getProperSize(prof->m_nTotalSize));
 					ImGui::TreePop();
 				}
 			}
