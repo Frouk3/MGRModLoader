@@ -752,15 +752,15 @@ public:
 				{
 					gui::bShow ^= true;
 
-					//if (bShouldReload && !gui::bShow)
-					//{
-					//	/*((void(__cdecl*)())(shared::base + 0x5C9100))();
-					//	((void(__cdecl*)())(shared::base + 0x5825B0))();*/
+					if (bShouldReload && !gui::bShow)
+					{
+						((void(__cdecl*)())(shared::base + 0x5C9100))();
+						((void(__cdecl*)())(shared::base + 0x5825B0))();
 
-					//	((void(__thiscall*)(void*, unsigned int, const char*, int))(shared::base + 0x64AC40))((void*)(shared::base + 0x17E8E40), 0xF01, "START", -1);
+						((void(__thiscall*)(void*, unsigned int, const char*, int))(shared::base + 0x64AC40))((void*)(shared::base + 0x17E8E40), 0xF01, "START", -1);
 
-					//	bShouldReload = false;
-					//}
+						bShouldReload = false;
+					}
 				}
 			};
 
