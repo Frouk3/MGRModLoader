@@ -109,7 +109,7 @@ void openScripts()
 				}
 				else
 				{
-					LOGERROR("Failed to load %s plugin!", prof->m_name);
+					LOGERROR("%s -> Failed to load %s!", prof->m_name, file->m_path);
 				}
 
 				SetCurrentDirectoryA(origPath);
@@ -181,6 +181,10 @@ void ModLoader::startup()
 	Load();
 
 	openProfiles(getModFolder().c_str());
+
+	if (Profiles.m_nSize)
+		SortProfiles();
+
 	int enabledMods = 0;
 	for (auto& profile : Profiles)
 	{
@@ -191,9 +195,6 @@ void ModLoader::startup()
 	openScripts();
 	LOGINFO("%d mod profiles loaded!", Profiles.m_nSize);
 	LOGINFO("Only %d was enabled", enabledMods);
-
-	if (Profiles.m_nSize)
-		SortProfiles();
 
 	bInit = true;
 }
@@ -312,7 +313,7 @@ void ModLoader::ModProfile::Startup()
 					if (LoadLibraryA(file->m_path))
 						LOGINFO("%s -> LoadLibrary(%s) successful", m_name, dll.c_str());
 					else
-						LOGINFO("%s failed to load %s", dll.c_str());
+						LOGINFO("%s -> Failed to load %s", m_name, dll.c_str());
 				}
 			}
 		}

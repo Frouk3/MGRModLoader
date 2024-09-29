@@ -328,6 +328,16 @@ int __fastcall hkLoad(FileRead::Work* ecx)
 
 		for (auto& prof : ModLoader::Profiles)
 		{
+			if (!(ecx->m_nFileFlags & 0x2000))
+			{
+				auto file = prof->FindFile(ecx->m_FileName);
+				if (!file)
+					file = prof->FindFile(strrchr(ecx->m_FileName, '\\') ? strrchr(ecx->m_FileName, '\\') + 1 : nullptr);
+
+				if (file)
+					ecx->m_nFileFlags |= 0x2000;
+			}
+
 			if (!prof->m_bEnabled)
 				continue;
 
@@ -752,15 +762,31 @@ public:
 				{
 					gui::bShow ^= true;
 
-					if (bShouldReload && !gui::bShow)
-					{
-						((void(__cdecl*)())(shared::base + 0x5C9100))();
-						((void(__cdecl*)())(shared::base + 0x5825B0))();
+				//	if (bShouldReload && !gui::bShow) // Hot Reload is still in development
+				//	{
+				//		// ((void(__cdecl*)())(shared::base + 0x5C9100))();
+				//		// ((void(__cdecl*)())(shared::base + 0x5825B0))();
 
-						((void(__thiscall*)(void*, unsigned int, const char*, int))(shared::base + 0x64AC40))((void*)(shared::base + 0x17E8E40), 0xF01, "START", -1);
+				//		// ((void(__thiscall*)(void*, unsigned int, const char*, int))(shared::base + 0x64AC40))((void*)(shared::base + 0x17E8E40), 0xF01, "START", -1);
 
-						bShouldReload = false;
-					}
+				//		/*FileRead::Manager::Instance.field_80 |= 1u;
+
+				//		if (((BOOL(__thiscall*)(void*, void*))(shared::base + 0xAB4340))((void*)(shared::base + 0x1ADC6C0), *(void**)(shared::base + 0x17E8E40)))
+				//		{
+				//			for (auto& reader : FileRead::Manager::Instance.m_FileReaderVector)
+				//			{
+				//				if (reader->m_nFileFlags & 0x2000)
+				//				{
+				//					reader->m_nFileFlags |= 8u;
+				//					reader->m_nWorkerState = 9;
+				//				}
+				//			}
+
+				//			bShouldReload = false;
+				//		}*/
+
+				//		bShouldReload = false;
+				//	}
 				}
 			};
 
@@ -986,7 +1012,7 @@ void gui::RenderWindow()
 			long long totalSize = 0L;
 
 			for (auto& prof : ModLoader::Profiles)
-				totalSize += prof->m_nTotalSize;
+				totalSize += prof->m_bEnabled ? prof->m_nTotalSize : 0;
 
 			ImGui::Text("Total size of enabled mods: %s", Utils::getProperSize(totalSize));
 			ImGui::EndTabItem();

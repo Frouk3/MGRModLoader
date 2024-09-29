@@ -415,7 +415,7 @@ namespace ModLoader
 			Utils::String m_date;
 			Utils::String m_authorURL;
 
-			lib::StaticArray<Utils::String, 8>* m_pDLLs = nullptr; // allow only 8 dll's to load
+			std::vector<Utils::String>* m_pDLLs = nullptr;
 
 			ModExtraInfo()
 			{
@@ -439,7 +439,7 @@ namespace ModLoader
 
 					if (dlls && dlls.length() > 1)
 					{
-						m_pDLLs = new lib::StaticArray<Utils::String, 8>();
+						m_pDLLs = new std::vector<Utils::String>();
 
 						for (int i = 0; i < dlls.length(); i++)
 						{
