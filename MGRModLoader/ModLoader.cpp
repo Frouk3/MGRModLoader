@@ -47,7 +47,7 @@ void openProfiles(const char *directory)
 	{
 		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 		{
-			if (strncmp(fd.cFileName, ".", 1u) && strncmp(fd.cFileName, "..", 2u))
+			if (fd.cFileName[0] != '.' && fd.cFileName[1] != '.')
 			{
 				if (strlen(fd.cFileName) < 64u)
 				{
@@ -91,6 +91,9 @@ void openScripts()
 		prof->FileWalk([&](ModLoader::ModProfile::File* file)
 			{
 				// Using strlow just to be sure if the asi may contain high case ".asi"
+				if ((strrchr(file->m_path, '\\') + 1)[0] == '.' || (strrchr(file->m_path, '\\') + 1)[1] == '.')
+					return;
+
 				if (strcmp(Utils::strlow((const char*)&file->m_path[strlen(file->m_path) - 4]), ".asi") || file->m_bInSubFolder) // Do not load if not asi or asi is in sub folder // changed to strcmp, since if we just set .asi before extension, it will load anyway
 					return;
 
@@ -154,8 +157,11 @@ void findFiles(const char* directory, Hw::cFixedVector<ModLoader::ModProfile::Fi
 					sprintf(path, "%s\\%s", directory, fd.cFileName);
 
 					file->File::File(GetLongFromLargeInteger(fd.nFileSizeLow, fd.nFileSizeHigh), path);
+					file->m_bInSubFolder = bInSubFolder;
+
 					files.push_back(file);
-					// LOGINFO("%s -> %s [%s]", profile->m_name.c_str(), path, Utils::getProperSize(file->m_nSize).c_str());
+					// LOGINFO("%s -> %s [%s]", profile->m_name.c_str(), path, Utils::getProperSize(file->m_nSize).c_str();
+
 					profile->m_nTotalSize += file->m_nSize;
 				}
 			}

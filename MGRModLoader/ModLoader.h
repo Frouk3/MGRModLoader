@@ -485,7 +485,8 @@ namespace ModLoader
 
 			for (auto& file : m_files)
 			{
-				if (strstr(file->m_path, Utils::formatPath(filename)))
+				if (strstr(file->m_path, Utils::formatPath(filename)) 
+					&& (strrchr(file->m_path, '\\') + 1)[0] != '.' && (strrchr(file->m_path, '\\') + 1)[1] != '.') // Skip the files with dots at the start
 					return file;
 			}
 			return nullptr;
@@ -499,7 +500,8 @@ namespace ModLoader
 
 			for (auto& file : m_files)
 			{
-				if (!strcmp(&file->m_path[strlen(file->m_path) - strlen(filename)], Utils::formatPath(filename)) && strlen(strrchr(file->m_path, '\\') + 1) == strlen(strrchr(filename, '\\') ? strrchr(filename, '\\') : filename))
+				if (!strcmp(&file->m_path[strlen(file->m_path) - strlen(filename)], Utils::formatPath(filename)) && strlen(strrchr(file->m_path, '\\') + 1) == strlen(strrchr(filename, '\\') ? strrchr(filename, '\\') + 1 : filename)
+					&& (strrchr(file->m_path, '\\') + 1)[0] != '.' && (strrchr(file->m_path, '\\') + 1)[1] != '.') // Skip the files with dots at the start
 					return file;
 			}
 			return nullptr;
