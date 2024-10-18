@@ -131,7 +131,7 @@ inline void __cdecl dbgPrint(const char* fmt, ...)
 	}
 }
 
-constexpr float MOD_LOADER_VERSION = 1.8f;
+constexpr float MOD_LOADER_VERSION = 2.0f;
 
 struct FileRead
 {
@@ -703,6 +703,109 @@ void __cdecl criErr_Callback(const char* errId, unsigned int p1, unsigned int p2
 
 bool bShouldReload = false;
 
+const char* GetNameFromKey(int vKey)
+{
+	static char name[128];
+	auto scanCode = MapVirtualKey(vKey, MAPVK_VK_TO_VSC);
+	switch (vKey)
+	{
+	case VK_LEFT: case VK_UP: case VK_RIGHT: case VK_DOWN:
+	case VK_RCONTROL: case VK_RMENU:
+	case VK_LWIN: case VK_RWIN: case VK_APPS:
+	case VK_PRIOR: case VK_NEXT:
+	case VK_END: case VK_HOME:
+	case VK_INSERT: case VK_DELETE:
+	case VK_DIVIDE:
+	case VK_NUMLOCK:
+		scanCode |= KF_EXTENDED;
+		break;
+	default:
+		break;
+	}
+	GetKeyNameText(scanCode << 16, (LPSTR)name, 128);
+	return vKey == 0 ? "Off" : name;
+}
+
+bool rebindKey(int& key)
+{
+	for (int i = 0; i < 256; i++)
+	{
+		auto keyPress = shared::IsKeyPressed(i);
+
+		if (i == VK_ESCAPE && keyPress)
+		{
+			key = 0;
+			return true;
+		}
+
+		if ((i == VK_LBUTTON || i == VK_RBUTTON) && keyPress)
+			continue;
+
+		if (keyPress)
+		{
+			key = i;
+
+			return true;
+		}
+	}
+
+	return false;
+}
+
+void DrawHotkeys(const char *label, int *mainKey, int *additionalKey, bool *rebinds, int& keyOrder)
+{
+	if (!rebinds)
+		return;
+
+	ImGui::PushID(label);
+	ImGui::Text(label);
+	ImGui::PushID("##1");
+	{
+		ImGui::SameLine();
+		if (!*rebinds && ImGui::Button(GetNameFromKey(!mainKey ? 0 : *mainKey)))
+		{
+			keyOrder = 0;
+			*rebinds = true;
+		}
+		else if (*rebinds && ImGui::Button("..."))
+			*rebinds = false;
+	}
+	ImGui::PopID();
+
+	ImGui::PushID("##2");
+	{
+		ImGui::SameLine();
+		if (!rebinds[1] && ImGui::Button(GetNameFromKey(!additionalKey ? 0 : *additionalKey)))
+		{
+			keyOrder = 1;
+			rebinds[1] = true;
+		}
+		else if (rebinds[1] && ImGui::Button("..."))
+			rebinds[1] = false;
+	}
+	ImGui::PopID();
+	ImGui::PopID();
+
+	if (*rebinds && mainKey && keyOrder == 0)
+	{
+		if (rebindKey(*mainKey))
+		{
+			++keyOrder;
+			*rebinds = false;
+			Sleep(40u);
+		}
+	}
+	else if (rebinds[1] && additionalKey && keyOrder == 1)
+	{
+		if (rebindKey(*additionalKey))
+		{
+			++keyOrder;
+			rebinds[1] = false;
+			Sleep(40u);
+		}
+	}
+}
+
 class Plugin
 {
 public:
@@ -758,9 +861,17 @@ public:
 
 		Events::OnUpdateEvent += []()
 			{
-				if (bIsForegroundWindow && g_GameMenuStatus == InMenu && shared::IsKeyPressed(VK_LMENU) && shared::IsKeyPressed(VK_F2, false))
+				if (bIsForegroundWindow && g_GameMenuStatus == InMenu)
 				{
-					gui::bShow ^= true;
+					if (ModLoader::aKeys[0] == 0 && ModLoader::aKeys[1] != 0)
+					{
+						ModLoader::aKeys[1] == 0;
+					}
+
+					if (ModLoader::aKeys[0] == 0 && ModLoader::aKeys[1] == 0)
+						gui::bShow = true;
+					else if (ModLoader::aKeys[0] != 0 && ModLoader::IsGUIKeyPressed())
+						gui::bShow ^= true;
 
 				//	if (bShouldReload && !gui::bShow) // Hot Reload is still in development
 				//	{
@@ -883,6 +994,9 @@ const char* formatFloatPrecision(char* buff)
 			if (chr[1] != '\0' && chr[1] != '0')
 				break;
 
+			if (*(chr - 1) == '.')
+				break;
+
 			if (*chr == '0')
 			{
 				if (chr[1] == '\0')
@@ -913,7 +1027,7 @@ void gui::RenderWindow()
 		formatFloatPrecision(version);
 		formatFloatPrecision(newVer);
 
-		ImGui::Text("New update is available(New: %s, Installed: %s)", version, newVer);
+		ImGui::Text("New update is available(New: %s, Installed: %s)", newVer, version);
 		if (ImGui::Button("OK"))
 		{
 			ShellExecute(NULL, "open", "https://www.nexusmods.com/metalgearrisingrevengeance/mods/650?tab=files", NULL, NULL, FALSE);
@@ -943,51 +1057,84 @@ void gui::RenderWindow()
 		ImGui::End();
 		return;
 	}
-	ImGui::Begin("Mod Loader", NULL);
+	if (ModLoader::aKeys[0] == 0)
+	{
+		ImGui::SetNextWindowCollapsed(true, ImGuiCond_Once);
+	}
+	ImGui::Begin("Mod Loader", NULL, ModLoader::aKeys[0] == 0 ? 0 : ImGuiWindowFlags_NoCollapse);
 	if (ImGui::BeginTabBar("##LOADERTAB"))
 	{
 		if (ImGui::BeginTabItem("Mods"))
 		{
-			for (auto& prof : ModLoader::Profiles)
+			if (ImGui::BeginTable("##ModsTable", 4, ImGuiTableFlags_Resizable | ImGuiTableFlags_Borders))
 			{
-				Utils::String treeNodeName;
-
-				treeNodeName = prof->m_name;
-
-				if (prof->m_ModInfo && prof->m_ModInfo->m_title && prof->m_ModInfo->m_author && prof->m_ModInfo->m_version)
+				ImGui::TableSetupColumn("Enabled");
+				ImGui::TableSetupColumn("Mod Name");
+				ImGui::TableSetupColumn("Priority");
+				ImGui::TableSetupColumn("Author");
+				ImGui::TableHeadersRow();
+				for (auto& prof : ModLoader::Profiles)
 				{
-					treeNodeName.format("%s(%s) : %s", prof->m_ModInfo->m_title.c_str(), prof->m_ModInfo->m_version.c_str(), prof->m_ModInfo->m_author.c_str());
-				}
+					ImGui::TableNextRow();
+					ImGui::PushID(prof->m_name.c_str());
 
-				if (ImGui::TreeNode(treeNodeName))
-				{
+					Utils::String modName;
+
+					modName = prof->m_name;
+
+					if (prof->m_ModInfo && prof->m_ModInfo->m_title)
+						modName = prof->m_ModInfo->m_title;
+
+
+					ImGui::TableNextColumn();
+					if (ImGui::Checkbox("##IsEnabled", &prof->m_bEnabled))
+						bShouldReload = true;
+
+					if (ImGui::IsItemHovered())
+					{
+						ImGui::SetTooltip("Some mods require game restart!");
+					}
+					
+					ImGui::TableNextColumn();
+					ImGui::TextUnformatted(modName);
+
+					if (ImGui::IsItemClicked())
+						prof->m_bEnabled ^= true;
+
+					if (ImGui::IsItemHovered())
+					{
+						if (prof->m_ModInfo && prof->m_ModInfo->m_description)
+							ImGui::SetTooltip("%s\n%s\n[%s]", prof->m_ModInfo->m_description.c_str(), prof->m_ModInfo->m_date.c_str(), Utils::getProperSize(prof->m_nTotalSize).c_str());
+						else
+							ImGui::SetTooltip("<No description given>\n[%s]", Utils::getProperSize(prof->m_nTotalSize).c_str());
+					}
+
+					ImGui::TableNextColumn();
+					ImGui::PushItemWidth(80.f);
+					if (ImGui::InputInt("##Priority", &prof->m_nPriority))
+						ModLoader::SortProfiles();
+
+					ImGui::PopItemWidth();
+
 					if (prof->m_ModInfo)
 					{
-						if (prof->m_ModInfo->m_description)
-							ImGui::TextUnformatted(prof->m_ModInfo->m_description.c_str());
-						if (prof->m_ModInfo->m_date)
-							ImGui::Text("Last time updated: %s", prof->m_ModInfo->m_date.c_str());
-
 						if (prof->m_ModInfo->m_author && prof->m_ModInfo->m_authorURL)
 						{
-							if (ImGui::Button(prof->m_ModInfo->m_author.c_str()))
+							ImGui::TableNextColumn();
+							ImGui::TextUnformatted(prof->m_ModInfo->m_author.c_str());
+							if (ImGui::IsItemClicked(ImGuiMouseButton_Left))
 								ShellExecuteA(NULL, "open", prof->m_ModInfo->m_authorURL.c_str(), NULL, NULL, NULL);
+						}
+						else if (prof->m_ModInfo->m_author)
+						{
+							ImGui::TableNextColumn();
+							ImGui::TextUnformatted(prof->m_ModInfo->m_author.c_str());
 						}
 					}
 
-					if (ImGui::Checkbox("Enabled", &prof->m_bEnabled))
-					{
-						bShouldReload = true;
-					}
-
-					if (ImGui::IsItemHovered())
-						ImGui::SetTooltip("Some mods require restarting game.");
-					if (ImGui::InputInt("Priority", &prof->m_nPriority))
-						ModLoader::SortProfiles();
-					
-					ImGui::Text("Size: %s", Utils::getProperSize(prof->m_nTotalSize));
-					ImGui::TreePop();
+					ImGui::PopID();
 				}
+				ImGui::EndTable();
 			}
 			ImGui::EndTabItem();
 		}
@@ -1019,6 +1166,10 @@ void gui::RenderWindow()
 		}
 		if (ImGui::BeginTabItem("Settings"))
 		{
+			static bool bRebinds[2] = { false };
+			static int iKeyOrder = 0;
+			DrawHotkeys("Menu Keys", &ModLoader::aKeys[0], &ModLoader::aKeys[1], bRebinds, iKeyOrder);
+			ImGui::Separator();
 			ImGui::Checkbox("Don't load files", &ModLoader::bIgnoreDATLoad);
 			ImGui::Checkbox("Don't load scripts", &ModLoader::bIgnoreScripts);
 			if (ImGui::Checkbox("Enable logging", &ModLoader::bEnableLogging) && !ModLoader::bEnableLogging)

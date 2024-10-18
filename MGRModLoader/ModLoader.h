@@ -282,11 +282,13 @@ namespace ModLoader
 	inline bool bIgnoreScripts = false;
 	inline bool bIgnoreDATLoad = false;
 	inline bool bEnableLogging = true;
+	inline int aKeys[2] = { 0x72, 0 };
 
 	void startup();
 	void SortProfiles();
 	void Load();
 	void Save();
+	bool IsGUIKeyPressed();
 	Utils::String getModFolder();
 
 	struct ModProfile
@@ -304,7 +306,7 @@ namespace ModLoader
 
 		ModProfile()
 		{
-			this->m_nPriority = 7; // def
+			this->m_nPriority = -1; // def
 			this->m_bEnabled = true;
 			this->m_bStarted = false;
 			this->m_nTotalSize = 0;
@@ -314,7 +316,7 @@ namespace ModLoader
 
 		ModProfile(const char* szName) : m_name(szName)
 		{
-			this->m_nPriority = 7;
+			this->m_nPriority = -1;
 			this->m_bEnabled = true;
 			this->m_bStarted = false;
 			this->m_nTotalSize = 0;

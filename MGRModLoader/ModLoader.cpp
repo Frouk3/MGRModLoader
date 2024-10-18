@@ -34,6 +34,8 @@ void openProfiles(const char *directory)
 
 	LOGINFO("Reading profiles...");
 
+	int iProfileEnum = 0;
+
 	sprintf(searchPath, "%s\\*", directory);
 
 	hFind = FindFirstFileA(searchPath, &fd);
@@ -56,6 +58,12 @@ void openProfiles(const char *directory)
 					{
 						ModLoader::Profiles.push_back(prof);
 						prof->Load(prof->m_name);
+
+						if (prof->m_nPriority == -1) // If it doesn't have set priority, just set it as enumeration
+							prof->m_nPriority = iProfileEnum;
+
+						++iProfileEnum;
+
 						LOGINFO("Loading %s(%s, %d)", prof->m_name.c_str(), prof->m_bEnabled ? "Enabled" : "Disabled", prof->m_nPriority);
 					}
 				}
@@ -231,6 +239,8 @@ void ModLoader::Load()
 	bIgnoreScripts = ini.ReadBool("ModLoader", "IgnoreScripts", false);
 	bIgnoreDATLoad = ini.ReadBool("ModLoader", "IgnoreFiles", false);
 	bEnableLogging = ini.ReadBool("ModLoader", "EnableLogging", true);
+	aKeys[0] = ini.ReadInt("ModLoader", "MainKeyGUI", 0x72);
+	aKeys[1] = ini.ReadInt("ModLoader", "AdditionalKeyGUI", 0);
 
 	for (auto& profile : Profiles)
 		profile->Load(profile->m_name);
@@ -245,11 +255,26 @@ void ModLoader::Save()
 	ini.WriteBool("ModLoader", "IgnoreScripts", bIgnoreScripts);
 	ini.WriteBool("ModLoader", "IgnoreFiles", bIgnoreDATLoad);
 	ini.WriteBool("ModLoader", "EnableLogging", bEnableLogging);
+	ini.WriteInt("ModLoader", "MainKeyGUI", aKeys[0]);
+	ini.WriteInt("ModLoader", "AdditionalKeyGUI", aKeys[1]);
 
 	for (auto& profile : Profiles)
 		profile->Save();
 
 	fclose(profileFile);
+}
+
+bool ModLoader::IsGUIKeyPressed()
+{
+	if (aKeys[0] != 0)
+	{
+		if (aKeys[1] != 0)
+			return shared::IsKeyPressed(aKeys[0]) && shared::IsKeyPressed(aKeys[1], false);
+
+		return shared::IsKeyPressed(aKeys[0], false);
+	}
+
+	return false;
 }
 
 Utils::String ModLoader::getModFolder()
@@ -263,7 +288,7 @@ void ModLoader::ModProfile::Load(const char* name)
 	IniReader prof(getModFolder() + "\\profiles.ini");
 	
 	this->m_bEnabled = prof.ReadBool(name, "Enabled", true);
-	this->m_nPriority = prof.ReadInt(name, "Priority", 7);
+	this->m_nPriority = prof.ReadInt(name, "Priority", -1);
 }
 
 void ModLoader::ModProfile::Startup()
