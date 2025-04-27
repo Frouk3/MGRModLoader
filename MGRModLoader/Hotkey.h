@@ -29,7 +29,7 @@ public:
 	Hotkey();
 	Hotkey(int key, int modifierKey, const char *szName, void(__fastcall *cb)(Hotkey *) = nullptr, eHotkeyType type = HT_TOGGLE);
 
-	inline eHotkeyType GetHotkeyType() const { return m_eType; }
+	inline eHotkeyType GetHotkeyType() const { return (eHotkeyType)(m_eType & 0x7F); }
 
 	void Load();
 	void Save();

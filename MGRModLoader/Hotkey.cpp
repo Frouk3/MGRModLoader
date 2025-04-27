@@ -64,9 +64,14 @@ void Hotkey::Load()
 {
     IniReader ini("MGRModLoaderSettings.ini");
 
+    bool bStrictType = (m_eType & 0x80) != 0;
+
     m_iKey = ini.ReadInteger("Hotkeys", m_szName, m_iDefault);
 	m_iModifierKey = ini.ReadInteger("Hotkeys", Utils::format("%s.Modifier", m_szName), m_iModifierKey);
-    m_eType = (eHotkeyType)ini.ReadInteger("Hotkeys", Utils::format("%s.Type", m_szName), m_eType);
+    if (bStrictType)
+        m_eType = (eHotkeyType)(ini.ReadInteger("Hotkeys", Utils::format("%s.Type", m_szName), m_eType) | 0x80);
+    else
+        m_eType = (eHotkeyType)ini.ReadInteger("Hotkeys", Utils::format("%s.Type", m_szName), m_eType);
 }
 
 void Hotkey::Save()
@@ -75,7 +80,7 @@ void Hotkey::Save()
 
     ini.WriteInteger("Hotkeys", m_szName, m_iKey);
     ini.WriteInteger("Hotkeys", Utils::format("%s.Modifier", m_szName), m_iModifierKey);
-    ini.WriteInteger("Hotkeys", Utils::format("%s.Type", m_szName), m_eType);
+    ini.WriteInteger("Hotkeys", Utils::format("%s.Type", m_szName), m_eType & 0x7F);
 }
 
 void Hotkey::Reset()
@@ -128,20 +133,20 @@ void Hotkey::Update()
         Rebind();
         return;
     };
-    if (m_eType == HT_ALWAYS)
+    if (GetHotkeyType() == HT_ALWAYS)
     {
         m_bToggle = true;
         if (m_callback)
             m_callback(this);
         return;
     }
-    else if (m_eType == HT_OFF)
+    else if (GetHotkeyType() == HT_OFF)
     {
         m_bToggle = false;
         return;
     }
 
-    switch (m_eType & 0x7F)
+    switch (GetHotkeyType())
     {
     case HT_TOGGLE:
         if (IsKeyPressed())
@@ -167,9 +172,9 @@ bool Hotkey::IsKeyPressed()
         return false;
 
     if (m_iModifierKey)
-        return shared::IsKeyPressed(m_iModifierKey, true) && shared::IsKeyPressed(m_iKey, m_eType == HT_HOLD);
+        return shared::IsKeyPressed(m_iModifierKey, true) && shared::IsKeyPressed(m_iKey, GetHotkeyType() == HT_HOLD);
 
-    return shared::IsKeyPressed(m_iKey, m_eType == HT_HOLD);
+    return shared::IsKeyPressed(m_iKey, GetHotkeyType() == HT_HOLD);
 }
 
 static int restoreModifierValue = 0;
