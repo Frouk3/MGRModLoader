@@ -120,7 +120,7 @@ namespace Utils
 			// Avoid destructing main string
 			other.m_string = nullptr;
 			other.m_length = 0;
-			other.m_length = 0;
+			other.m_capacity = 0;
 		}
 
 		~String()

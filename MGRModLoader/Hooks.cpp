@@ -136,7 +136,7 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_Load, FileRead::Wo
 	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
 		return oFileRead_Load(pThis);
 
-	if (pThis->m_FileFlags & 0x10000 || pThis->m_FileFlags & 0x8000 || pThis->m_WorkerState == FileRead::Work::FILEWORK_FINISHED) // Load original or load modified one or abort if the file was loaded
+	if (pThis->m_FileFlags & 0x10000 || pThis->m_FileFlags & 0x8000) // Load original or load modified one or abort if the file was loaded
 		return oFileRead_Load(pThis);
 
 	Utils::formatPath(pThis->m_Filename);

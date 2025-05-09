@@ -466,6 +466,7 @@ void ModLoader::ModProfile::Startup()
 
 			for (auto& dir : includePath)
 			{
+				LOGINFO("Trying to bind %s", dir.c_str());
 				FileSystem::Directory* pDir = m_root.FindSubDir(dir.c_str());
 				std::function<void(FileSystem::Directory*)> bindDir = [&](FileSystem::Directory* dir) -> void
 					{

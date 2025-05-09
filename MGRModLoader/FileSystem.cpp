@@ -154,10 +154,7 @@ FileSystem::Directory* FileSystem::Directory::FindSubDirRecursive(const std::vec
 
 	for (auto& dir : m_subdirs)
 	{
-		if (dir->empty())
-			continue;
-
-		if (!strcmp(dir->getName(), pathParts[index]))
+		if (pathParts[index] == dir->getName())
 			return dir->FindSubDirRecursive(pathParts, index + 1);
 	}
 
