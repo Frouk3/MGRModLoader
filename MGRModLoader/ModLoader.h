@@ -132,7 +132,7 @@ namespace Logger
 namespace Updater
 {
 	inline bool bEnabled = true;
-	inline constexpr double fCurrentVersion = 2.7;
+	inline constexpr double fCurrentVersion = 2.71;
 	inline double fLatestVersion = -1.0;
 	inline HANDLE hUpdateThread;
 	enum UpdateStatus : unsigned int
