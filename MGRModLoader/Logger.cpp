@@ -72,7 +72,7 @@ void Logger::Close()
 void Logger::ReOpen()
 {
 	if (!(LogFile = freopen(LogFilePath, "w", LogFile)))
-		assert(0 && "Failed to reopen log file");
+		assert(!"Failed to reopen log file");
 }
 
 void Logger::Flush()
@@ -136,5 +136,10 @@ void Logger::PrintfLn(const char* format, ...)
 	vPrintf(format, args);
 	Printf("\n");
 
+#if LOGGER_DEBUG
+	Utils::String str;
+	str.formatV(format, args);
+	LatestLog.push_back({ Utils::format(Utils::String("[%02d:%02d:%02d.%03d] ") + str, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds), 3.f});
+#endif
 	va_end(args);
 }

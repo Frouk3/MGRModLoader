@@ -4,6 +4,8 @@
 #define FILES_TOOLS_HPP
 #include "ModLoader.h"
 #include <HkDataManagerImplement.h>
+#define TAKE_TIMER_SNAPSHOTS 0
+#include "Timer.hpp"
 
 namespace CriWare
 {
@@ -99,86 +101,89 @@ namespace DataArchiveTools
 
 	inline size_t replaceFiles(FilesReplacer& files, size_t alignment)
 	{
-		if (files.m_files.empty())
+		if (files.m_files.empty() || files.m_dataholder->asEntry()->m_nAmountOfFiles <= 0)
 			return files.m_datasize;
 
-		DataArchiveHolder* holder = files.m_dataholder;
 		size_t holdersize = files.m_datasize;
-		DataArchiveEntry* dataEntry = holder->asEntry();
 
-		if (!dataEntry->m_nAmountOfFiles)
+		DataArchiveHolder holder;
+
+		holder.m_data = (char*)ModloaderHeap.AllocateMemory(holdersize, 0x1000, alignment, 0);
+		if (!holder.m_data)
 			return holdersize;
 
-		size_t* positions = (size_t*)(holder->m_data + dataEntry->m_nPositionOffset);
-		size_t* sizes = (size_t*)(holder->m_data + dataEntry->m_nSizesOffset);
+		memcpy(holder.m_data, files.m_dataholder->m_data, files.m_datasize);
 
-		if (dataEntry->m_nAmountOfFiles > 1)
+		for (FileStructure& file : files.m_files)
 		{
-			for (auto& file : files.m_files)
-				holdersize += file.m_fileSize - sizes[file.m_fileindex];
+			if (!file.m_file)
+				continue;
 
-			char* filedata = (char*)ModloaderHeap.AllocateMemory(holdersize, 0x1000, alignment, 0);
+			size_t fileSize = file.m_fileSize;
+			size_t fileIndex = file.m_fileindex;
 
-			if (filedata)
+			if (fileIndex == -1)
+				continue;
+		
+			size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
+
+			fileSize += align(16, fileSize) - sizes[fileIndex];
+
+			sizes[fileIndex] = file.m_fileSize;
+
+			holdersize += fileSize;
+		}
+
+		if (holder.asEntry()->m_nAmountOfFiles > 1)
+		{
+			for (int i = 1; i < holder.asEntry()->m_nAmountOfFiles; i++)
 			{
-				size_t* newpositions = (size_t*)(filedata + ((DataArchiveEntry*)filedata)->m_nPositionOffset);
-				size_t* newsizes = (size_t*)(filedata + ((DataArchiveEntry*)filedata)->m_nSizesOffset);
+				size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
+				size_t* positions = (size_t*)(holder.m_data + holder.asEntry()->m_nPositionOffset);
 
-				memcpy(filedata, holder->m_data, files.m_datasize);
-				for (auto& file : files.m_files)
-					newsizes[file.m_fileindex] = file.m_fileSize;
+				positions[i] = positions[i - 1] + sizes[i - 1] + align(16, positions[i - 1] + sizes[i - 1]);
 
-				auto GetFileByItsIndex = [&](int index) -> FileStructure*
-					{
-						for (auto& file : files.m_files)
-							if (file.m_fileindex == index)
-								return &file;
+				FileStructure* file = nullptr;
 
-						return nullptr;
-					};
-
-				for (size_t i = 0; i < dataEntry->m_nAmountOfFiles - 1; i++)
+				for (FileStructure& f : files.m_files)
 				{
-					newpositions[i + 1] = newpositions[i] + newsizes[i] + align(16, newpositions[i] + newsizes[i]);
-
-					FileStructure* file = GetFileByItsIndex(i);
-
-					if (file && file->m_file)
+					if (f.m_fileindex == i)
 					{
-						memcpy(filedata + newpositions[i], file->m_file, newsizes[i]);
-					}
-					else
-					{
-						memcpy(filedata + newpositions[i], holder->m_data + positions[i], sizes[i]);
+						file = &f;
+						break;
 					}
 				}
 
-				operator delete(holder->m_data, &ModloaderHeap);
-
-				holder->m_data = filedata;
+				if (!file)
+					memcpy(holder.m_data + positions[i], files.m_dataholder->getFiledata(i), files.m_dataholder->getSize(i));
+				else
+					memcpy(holder.m_data + positions[i], file->m_file, file->m_fileSize);
 			}
 		}
-		else
+		else // just one file
 		{
-			holdersize += files.m_files[0].m_fileSize - sizes[0];
-
-			char* filedata = (char*)ModloaderHeap.AllocateMemory(holdersize, 0x1000, alignment, 0);
-
-			if (filedata)
+			size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
+			size_t* positions = (size_t*)(holder.m_data + holder.asEntry()->m_nPositionOffset);
+			FileStructure* file = nullptr;
+			for (FileStructure& f : files.m_files)
 			{
-				memcpy(filedata, holder->m_data, files.m_datasize);
-
-				((size_t*)(filedata + ((DataArchiveEntry*)filedata)->m_nSizesOffset))[0] = files.m_files[0].m_fileSize;
-
-				memcpy(filedata + positions[0], files.m_files[0].m_file, files.m_files[0].m_fileSize);
+				if (f.m_fileindex == 0)
+				{
+					file = &f;
+					break;
+				}
 			}
-			
-			operator delete(holder->m_data, &ModloaderHeap);
-			
-			holder->m_data = filedata;
+			if (!file)
+				memcpy(holder.m_data + positions[0], files.m_dataholder->getFiledata(0), files.m_dataholder->getSize(0));
+			else
+				memcpy(holder.m_data + positions[0], file->m_file, file->m_fileSize);
 		}
 
-		files.m_datasize = holdersize;
+		if (holder.m_data)
+		{
+			operator delete(files.m_dataholder->m_data, &ModloaderHeap);
+			files.m_dataholder->m_data = holder.m_data;
+		}
 
 		return holdersize;
 	}
@@ -189,55 +194,93 @@ namespace DataArchiveTools
 	}
 }
 
-// Broken, just, don't touch it
 inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_size, const Utils::String& filename, Hw::cHeap* allocator, size_t alignment)
 {
-	return holder_size;
+	using namespace DataArchiveTools;
+	size_t holdersize = holder_size;
+	Utils::String foldername = filename;
 
-	if (strcmp(holder->m_data, "DAT\0"))
-		return holder_size;
+	if (char* ext = foldername.strrchr('.'); ext)
+		*ext = 0;
 
-	Utils::String filCopy = filename;
-
-	if (char* chr = filCopy.strrchr('.'); chr)
-		*chr = 0;
-
-	filCopy.shrink_to_fit();
-
-	FileSystem::Directory* dir = nullptr;
+	foldername.shrink_to_fit();
 
 	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 	{
 		if (!prof->m_bEnabled)
 			continue;
 
-		if ((dir = prof->FindDirectory(filCopy)) != nullptr)
-			break;
-	}
+		FileSystem::Directory* dir = prof->FindDirectory(foldername);
 
-	DataArchiveTools::FilesReplacer replacer(holder, holder_size);
+		if (!dir)
+			continue;
 
-	if (dir)
-	{
-		for (auto& file : dir->m_files)
+		int it = 0;
+		CTimer timer;
+		FilesReplacer filesReplacer(holder, holder_size);
+		for (const char* fileName = holder->getNameByFileIndex(0); it < holder->asEntry()->m_nAmountOfFiles; fileName = holder->getNameByFileIndex(++it))
 		{
-			if (size_t ind = holder->getFileIndexLoc(file.getName()); ind != -1)
+			FileSystem::File* file = dir->FindFile(fileName);
+
+			Utils::String fld = foldername / fileName;
+			if (char* chr = fld.strrchr('.'); chr)
+				*chr = 0;
+
+			fld.shrink_to_fit();
+			if (!strcmp((char*)holder->getFiledata(it), "DAT\0"))
 			{
-				void* fldata = file.read();
-				if (fldata)
-					replacer.m_files.push_back(DataArchiveTools::FileStructure(fldata, file.m_filesize, ind, file.getName()));
+				if (FileSystem::Directory* dir = prof->FindDirectory(fld); !file && dir)
+				{
+					size_t size = holder->getSize(it);
+					LOGINFO("[DATAWORK] We have a DAT here %s, fld = %s", fileName, fld.c_str());
+					void* fileData = ModloaderHeap.AllocateMemory(size + align(16, size), 0x1000, 1, 0);
+					if (fileData)
+					{
+						memcpy(fileData, holder->getFiledata(it), size);
+						DataArchiveHolder holder;
+						holder.m_data = (char*)fileData;
+						size = ReplaceDataArchiveFile(&holder, size, foldername / fileName, &ModloaderHeap, 1);
+						fileData = holder.m_data;
+						filesReplacer.m_files.push_back(FileStructure(fileData, size, it, fileName));
+					}
+				}
+				else if (file && dir)
+				{
+					LOGWARNING("[DATAWORK] There's priority for packed files, skipping to file %s without repacking", fileName);
+				}
+			}
+			// LOGINFO("iterating through %s", fileName);
+
+			if (!file || !file->m_filesize)
+				continue;
+
+			LOGINFO("[DATAWORK] Found unpacked %s[%s] in %s", fileName, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
+			void* fileData = ModloaderHeap.AllocateMemory(file->m_filesize + align(16, file->m_filesize), 0x1000, 1, 0);
+			if (fileData && file->read(fileData))
+			{
+				filesReplacer.m_files.push_back(FileStructure(fileData, file->m_filesize, it, fileName));
+			}
+			else
+			{
+				if (fileData)
+				{
+					operator delete(fileData, &ModloaderHeap);
+					fileData = nullptr;
+				}
 			}
 		}
+		if (!filesReplacer.m_files.empty())
+		{
+			holdersize = replaceFiles(filesReplacer, alignment);
+			timer.stop();
+			LOG_TIMER(timer, "Took %.3f seconds while repacking");
+		}
+		else
+		{
+			LOGWARNING("[DATAWORK] There are no files to replace, but folder %s was found", foldername.c_str());
+		}
 	}
-
-	if (replacer.m_files.empty())
-		return holder_size;
-
-	holder_size = DataArchiveTools::replaceFiles(replacer, alignment);
-
-	holder->m_data = replacer.m_dataholder->m_data;
-
-	return holder_size;
+	return holdersize;
 }
 
 #endif 

@@ -126,7 +126,7 @@ FileSystem::Directory* FileSystem::Directory::FindSubDir(const Utils::String& pa
 	if (path.empty())
 		return nullptr;
 
-	std::vector<Utils::String> pathParts;
+	std::vector<std::string> pathParts; // how the fuck it crashes with Utils::String where every field is valid
 
 	const char* begin = path.c_str();
 	const char* end = path.c_str() + path.length();
@@ -137,7 +137,7 @@ FileSystem::Directory* FileSystem::Directory::FindSubDir(const Utils::String& pa
 		if (!next)
 			next = end;
 
-		pathParts.push_back(Utils::String(begin, next - begin));
+		pathParts.push_back(std::string(begin, next - begin));
 		begin = next + 1;
 	}
 
@@ -147,7 +147,7 @@ FileSystem::Directory* FileSystem::Directory::FindSubDir(const Utils::String& pa
 	return FindSubDirRecursive(pathParts, 0);
 }
 
-FileSystem::Directory* FileSystem::Directory::FindSubDirRecursive(const std::vector<Utils::String>& pathParts, size_t index)
+FileSystem::Directory* FileSystem::Directory::FindSubDirRecursive(const std::vector<std::string>& pathParts, size_t index)
 {
 	if (index >= pathParts.size())
 		return this;

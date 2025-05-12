@@ -425,6 +425,35 @@ void gui::RenderWindow()
 		ImGui::End();
 		return;
 	}
+#if LOGGER_DEBUG
+	float offsetY = 40.f;
+	size_t longestTextLength = 0;
+	for (auto& log : Logger::LatestLog)
+	{
+		ImGui::GetForegroundDrawList()->AddText(ImVec2(11.f, offsetY + 1.f), 0xFF000000, log.first.c_str());
+		ImGui::GetForegroundDrawList()->AddText(ImVec2(10.f, offsetY), -1, log.first.c_str());
+
+		if (log.first.length() > longestTextLength)
+			longestTextLength = log.first.length();
+
+		offsetY += 15.f;
+	}
+	if (!Logger::LatestLog.empty() && longestTextLength)
+	{
+		ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(10.f, 40.f), ImVec2(longestTextLength * 10.f + 30.f, offsetY + 5.f), 0x80000000, 5.f);
+	}
+	for (int i = Logger::LatestLog.m_size - 1; i >= 0; i--)
+	{
+		auto& log = Logger::LatestLog[i];
+		log.second = max(log.second - ImGui::GetIO().DeltaTime, 0.0f);
+
+		if (log.second <= 0.f)
+		{
+			Logger::LatestLog.remove(log);
+			continue;
+		}
+	}
+#endif
 	if (bOpenUpdaterMB)
 	{
 		ImGui::OpenPopup("Updater");

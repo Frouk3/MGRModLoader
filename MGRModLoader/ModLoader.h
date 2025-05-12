@@ -94,7 +94,7 @@ namespace FileSystem
 
 		File *FindFile(const Utils::String& filepath);
 		Directory* FindSubDir(const Utils::String& path);
-		Directory* FindSubDirRecursive(const std::vector<Utils::String>& pathParts, size_t index = 0);
+		Directory* FindSubDirRecursive(const std::vector<std::string>& pathParts, size_t index = 0);
 	};
 
 	void FileWalk(const std::function<void(File&)>& cb, const char *path); // Static function to go through all files in the path
@@ -105,12 +105,17 @@ namespace FileSystem
 	bool PathExists(const char* path);
 }
 
+#define LOGGER_DEBUG 0
+
 namespace Logger
 {
 	inline FILE* LogFile = nullptr;
 	inline bool bFlushImmediately = false;
 	inline bool bEnabled = true;
 	inline char LogFilePath[MAX_PATH] = { 0 };
+#if LOGGER_DEBUG
+	inline lib::StaticArray<std::pair<Utils::String, float>, 64> LatestLog;
+#endif
 
 	void Init();
 
