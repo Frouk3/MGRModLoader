@@ -137,7 +137,7 @@ namespace Logger
 namespace Updater
 {
 	inline bool bEnabled = true;
-	inline constexpr double fCurrentVersion = 2.8;
+	inline constexpr double fCurrentVersion = 2.9;
 	inline double fLatestVersion = -1.0;
 	inline HANDLE hUpdateThread;
 	enum UpdateStatus : unsigned int
@@ -178,6 +178,7 @@ namespace ModLoader
 	inline bool bLoadMods = true;
 	inline bool bLoadScripts = true;
 	inline bool bLoadFiles = true;
+	inline bool bSaveRAM = false; // When enabled, it will not allocate any additional info or structures that are used in profiles that are disabled and etc.
 
 	Utils::String GetModFolder();
 	void Startup();
@@ -329,6 +330,8 @@ namespace ModLoader
 				delete m_ModInfo;
 				m_ModInfo = nullptr;
 			}
+
+			m_root.clear();
 		}
 
 		FileSystem::File* FindFile(const Utils::String& filename);
@@ -340,6 +343,7 @@ namespace ModLoader
 		void ScanFiles();
 		void Save(IniReader &ini);
 		void Load(IniReader &ini);
+		void Cleanup();
 
 		void Restart();
 

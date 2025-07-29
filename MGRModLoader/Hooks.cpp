@@ -335,7 +335,7 @@ CREATE_HOOK(false, shared::base + 0x5825B0, int, __cdecl, BindCpk)
 
 		prof->FileWalk([&](FileSystem::File& file) -> void
 			{
-				if (const char* ext = strrchr(file.getName(), '.'); ext && !strcmp(file.getName(), ".cpk"))
+				if (const char* ext = strrchr(file.getName(), '.'); ext && !strcmp(ext, ".cpk"))
 				{
 					CriFsBinderWork *pWork = CriWare::getFreeBinderWork();
 
@@ -345,16 +345,16 @@ CREATE_HOOK(false, shared::base + 0x5825B0, int, __cdecl, BindCpk)
 						return;
 					}
 
-					while (pWork->m_BindStatus == 1)
+					while (pWork->m_nBindStatus == 1)
 					{
-						if (criFsBinder_GetStatus(pWork->m_BinderId, &pWork->m_BindStatus) || pWork->m_BindStatus != 1 && pWork->m_BindStatus != 2)
+						if (criFsBinder_GetStatus(pWork->m_BinderId, &pWork->m_nBindStatus) || pWork->m_nBindStatus != 1 && pWork->m_nBindStatus != 2)
 						{
 							CriWare::freeBinderWork(pWork);
 							break;
 						}
 					}
 
-					if (pWork->m_BindStatus != 2)
+					if (pWork->m_nBindStatus != 2)
 					{
 						LOGERROR("[CRIWARE] Failed to bind %s archive.", file.m_path.c_str());
 						return;

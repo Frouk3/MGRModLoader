@@ -44,16 +44,14 @@ void ModLoader::Startup()
 	{
 		Profiles[0]->m_place = 0;
 		for (size_t i = 1; i < Profiles.size(); i++)
-		{
 			Profiles[i]->m_place = Profiles[i - 1]->m_place + 1;
-		}
 
 		SortProfiles();
 
 		LOGINFO("Profile startup...");
 		for (auto& profile : Profiles)
 		{
-			if (!profile->m_bStarted)
+			if (!profile->m_bStarted && !(bSaveRAM && !profile->m_bEnabled))
 			{
 				LOGINFO("[%s] %s -> Startup", profile->m_bEnabled ? "+" : "-", profile->m_name.c_str());
 				profile->Startup();
@@ -61,6 +59,9 @@ void ModLoader::Startup()
 					LOGWARNING("%s is an empty profile, remove the folder from the mods folder. Location: %s", profile->m_name.c_str(), profile->m_root.m_path.c_str());
 			}
 		}
+		if (bSaveRAM)
+			LOGINFO("Some disabled mods were not loaded into the game to save the RAM. Disable it if you don't want to mercy RAM of the game.");
+
 		LOGINFO("Profile startup done.");
 	}
 	else
@@ -106,6 +107,7 @@ void ModLoader::Save(bool bSilent)
 	ini.WriteBool("ModLoader", "LoadMods", bLoadMods);
 	ini.WriteBool("ModLoader", "LoadScripts", bLoadScripts);
 	ini.WriteBool("ModLoader", "LoadFiles", bLoadFiles);
+	ini.WriteBool("ModLoader", "SaveRAM", bSaveRAM);
 
 	if (!bInit || !bLoadMods)
 		return;
@@ -124,9 +126,12 @@ void ModLoader::Save(bool bSilent)
 		profile->Save(ini);
 
 		fprintf(iniFile, "\n");
+		fflush(iniFile);
 	}
 
 	if (!bSilent) LOGINFO("Saving complete.");
+
+	fclose(iniFile);
 }
 
 void ModLoader::Load()
@@ -136,6 +141,7 @@ void ModLoader::Load()
 	bLoadMods = ini.ReadBool("ModLoader", "LoadMods", bLoadMods);
 	bLoadScripts = ini.ReadBool("ModLoader", "LoadScripts", bLoadScripts);
 	bLoadFiles = ini.ReadBool("ModLoader", "LoadFiles", bLoadFiles);
+	bSaveRAM = ini.ReadBool("ModLoader", "SaveRAM", bSaveRAM);
 }
 
 void ModLoader::ReadProfiles()
@@ -520,6 +526,17 @@ void ModLoader::ModProfile::Load(IniReader &ini)
 {
 	m_place = ini[m_name.c_str()]["MyPlace"]; // m_place is zero, so there's no need to call full function
 	m_bEnabled = ini.ReadBool(m_name.c_str(), "Enabled", m_bEnabled);
+}
+
+void ModLoader::ModProfile::Cleanup()
+{
+	if (m_ModInfo)
+	{
+		delete m_ModInfo;
+		m_ModInfo = nullptr;
+	}
+	m_bStarted = false;
+	m_root.clear();
 }
 
 void ModLoader::ModProfile::Restart()

@@ -414,8 +414,6 @@ int ImMessageBox(const char* label, const char* description, unsigned int type)
 	return result;
 }
 
-
-
 void gui::RenderWindow()
 {
 	if (!ModLoader::bInit)
@@ -525,7 +523,16 @@ void gui::RenderWindow()
 
 						ImGui::TableNextColumn();
 
-						ImGui::Checkbox(title, &prof->m_bEnabled);
+						if (ImGui::Checkbox(title, &prof->m_bEnabled))
+						{
+							if (ModLoader::bSaveRAM)
+							{
+								if (prof->m_bEnabled)
+									prof->Startup();
+								else
+									prof->Cleanup();
+							}
+						}
 
 						if (ImGui::BeginDragDropSource())
 						{
@@ -778,6 +785,28 @@ void gui::RenderWindow()
 				ImGui::Checkbox("Enable mods", &ModLoader::bLoadMods);
 				ImGui::Checkbox("Enable script loading", &ModLoader::bLoadScripts);
 				ImGui::Checkbox("Enable file loading", &ModLoader::bLoadFiles);
+				if (ImGui::Checkbox("Save RAM", &ModLoader::bSaveRAM))
+				{
+					if (ModLoader::bSaveRAM)
+					{
+						for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
+						{
+							if (prof->m_bEnabled)
+								prof->Startup();
+							else
+								prof->Cleanup();
+						}
+					}
+					else
+					{
+						for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
+						{
+							prof->Startup(); // There's already a check if mod was started, no need to worry about it reading everything again
+						}
+					}
+				}
+				Hint("If enabled, will not load mods that are not used in the current scene.\n"
+					 "If disabled, will load all mods at once, which may cause RAM usage to increase.");
 				if (ImGui::Checkbox("Enable logging", &Logger::bEnabled))
 				{
 					if (!Logger::bEnabled)

@@ -22,7 +22,7 @@ namespace CriWare
 		pWork->m_nStatus = 0;
 		pWork->m_CriBinderHn = nullptr;
 
-		pWork->m_BindStatus = 6;
+		pWork->m_nBindStatus = 6;
 		pWork->m_nPriority = -1;
 
 		aBinders.push_back(pWork);

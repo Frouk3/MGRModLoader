@@ -17,10 +17,15 @@ void FileSystem::Directory::clear()
 	if (!m_subdirs.empty())
 	{
 		for (auto& dir : m_subdirs)
+		{
 			dir->clear();
+			delete dir;
+		}
 
 		m_subdirs.clear();
 	}
+
+	m_filesize = 0l;
 }
 
 void FileSystem::Directory::calculateDirectorySize()
@@ -70,7 +75,7 @@ void FileSystem::Directory::scanFiles(bool bRecursive, const bool bInSubFolder, 
 			}
 			else
 			{
-				File file((Utils::String(m_path) / fd.cFileName).c_str(), fd.nFileSizeLow);
+				File file(m_path / fd.cFileName, fd.nFileSizeLow);
 				file.m_bInSubFolder = bInSubFolder;
 
 				if (flags & 1)
