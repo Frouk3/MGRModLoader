@@ -114,7 +114,7 @@ namespace Logger
 	inline bool bEnabled = true;
 	inline char LogFilePath[MAX_PATH] = { 0 };
 #if LOGGER_DEBUG
-	inline lib::StaticArray<std::pair<Utils::String, float>, 64> LatestLog;
+	inline std::vector<std::pair<Utils::String, float>> LatestLog;
 #endif
 
 	void Init();
@@ -137,7 +137,7 @@ namespace Logger
 namespace Updater
 {
 	inline bool bEnabled = true;
-	inline constexpr double fCurrentVersion = 3.0;
+	inline constexpr double fCurrentVersion = 3.1;
 	inline double fLatestVersion = -1.0;
 	inline HANDLE hUpdateThread;
 	enum UpdateStatus : unsigned int

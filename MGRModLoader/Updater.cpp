@@ -22,7 +22,7 @@ bool Updater::CheckForUpdates()
 	Utils::String savePath(MAX_PATH);
 	GetTempPathA(MAX_PATH, savePath.data());
 
-	savePath.shrink_to_fit();
+	savePath.resize();
 
 	savePath /= "ModLoaderVersion.ini";
 

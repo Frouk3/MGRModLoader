@@ -38,11 +38,11 @@ void gui::OnEndScene()
 
 	if (!init)
 	{
-		oWndProc = (WNDPROC)::SetWindowLongPtr(Hw::OSWindow, GWLP_WNDPROC, (LONG)hkWindowProc);
+		oWndProc = (WNDPROC)::SetWindowLongPtr(Hw::OsWindow::m_MainWindow, GWLP_WNDPROC, (LONG)hkWindowProc);
 
 		ImGui::CreateContext();
-		ImGui_ImplWin32_Init(Hw::OSWindow);
-		ImGui_ImplDX9_Init(Hw::GraphicDevice);
+		ImGui_ImplWin32_Init(Hw::OsWindow::m_MainWindow);
+		ImGui_ImplDX9_Init(Hw::GraphicDevice::m_pDevice);
 
 		gui::LoadStyle();
 

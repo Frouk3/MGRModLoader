@@ -139,7 +139,7 @@ void Logger::PrintfLn(const char* format, ...)
 #if LOGGER_DEBUG
 	Utils::String str;
 	str.formatV(format, args);
-	LatestLog.push_back({ Utils::format(Utils::String("[%02d:%02d:%02d.%03d] ") + str, time.wHour, time.wMinute, time.wSecond, time.wMilliseconds), 3.f});
+	LatestLog.push_back({ Utils::format((Utils::String("[%02d:%02d:%02d.%03d] ") + str).c_str(), time.wHour, time.wMinute, time.wSecond, time.wMilliseconds), 3.f});
 #endif
 	va_end(args);
 }

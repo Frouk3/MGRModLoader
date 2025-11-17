@@ -62,7 +62,7 @@ void FileSystem::Directory::scanFiles(bool bRecursive, const bool bInSubFolder, 
 
 			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
 			{
-				Directory *subdir = new Directory(Utils::String(m_path) / fd.cFileName);
+				Directory* subdir = new Directory((Utils::String(m_path) / fd.cFileName).c_str());
 				subdir->m_parent = this;
 
 				if (bRecursive)
@@ -75,7 +75,7 @@ void FileSystem::Directory::scanFiles(bool bRecursive, const bool bInSubFolder, 
 			}
 			else
 			{
-				File file(m_path / fd.cFileName, fd.nFileSizeLow);
+				File file((m_path / fd.cFileName).c_str(), fd.nFileSizeLow);
 				file.m_bInSubFolder = bInSubFolder;
 
 				if (flags & 1)
@@ -198,7 +198,7 @@ void* FileSystem::File::read()
 	if (!m_filesize)
 		return nullptr;
 
-	void *heap = ModloaderHeap.AllocateMemory(m_filesize, 0x1000u, 1, 0);
+	void *heap = ModloaderHeap.alloc(m_filesize, 0x1000u, Hw::HW_ALLOC_PHYSICAL, 0);
 
 	if (!heap)
 		return heap; // same as `nullptr`

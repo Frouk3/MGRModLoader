@@ -3,48 +3,49 @@
 #ifndef FILES_TOOLS_HPP
 #define FILES_TOOLS_HPP
 #include "ModLoader.h"
-#include <HkDataManagerImplement.h>
+#include <Hw.h>
+#include <HwDvd.h>
 #define TAKE_TIMER_SNAPSHOTS 0
 #include "Timer.hpp"
 
 namespace CriWare
 {
 	inline int iAvailableCPKs = 0;
-	inline lib::StaticArray<CriFsBinderWork *, 128> aBinders;
+	inline lib::StaticArray<Hw::cDvdCriFsBinder *, 128> aBinders;
 
-	inline CriFsBinderWork* getFreeBinderWork()
+	inline Hw::cDvdCriFsBinder* getFreeBinderWork()
 	{
-		CriFsBinderWork* pWork = new(&ModloaderHeap) CriFsBinderWork();
+		Hw::cDvdCriFsBinder* pWork = new(&ModloaderHeap) Hw::cDvdCriFsBinder();
 
 		if (!pWork)
 			return nullptr;
 
-		pWork->m_nStatus = 0;
-		pWork->m_CriBinderHn = nullptr;
+		pWork->m_Type = Hw::cDvdCriFsBinder::TYPE_INVALID;
+		pWork->m_BinderHandle = nullptr;
 
-		pWork->m_nBindStatus = 6;
-		pWork->m_nPriority = -1;
+		pWork->m_BindStatus = CRIFSBINDER_STATUS_NONE;
+		pWork->m_Prio = -1;
 
-		aBinders.push_back(pWork);
+		aBinders.pushBack(pWork);
 
 		return pWork;
 	}
 
-	inline void freeBinderWork(CriFsBinderWork *binderWork)
+	inline void freeBinderWork(Hw::cDvdCriFsBinder *binderWork)
 	{
-		if (binderWork->m_CriBinderHn)
+		if (binderWork->m_BinderHandle)
 		{
-			CriFsBinderHn_free(binderWork->m_CriBinderHn);
-			binderWork->m_CriBinderHn = nullptr;
+			CriFsBinderHn_free(binderWork->m_BinderHandle);
+			binderWork->m_BinderHandle = nullptr;
 		}
 
-		binderWork->m_nStatus = 0;
-		binderWork->m_nPriority = -1;
+		binderWork->m_BindStatus = CRIFSBINDER_STATUS_NONE;
+		binderWork->m_Prio = -1;
 
 		for (auto& work : aBinders)
 		{
 			if (work == binderWork)
-				aBinders.remove(work);
+				aBinders.erase(work);
 		}
 
 		operator delete(binderWork, &ModloaderHeap);
@@ -71,7 +72,7 @@ namespace DataArchiveTools
 
 	struct FilesReplacer
 	{
-		DataArchiveHolder* m_dataholder;
+		Hw::cFmerge* m_dataholder;
 		size_t m_datasize;
 		std::vector<FileStructure> m_files;
 
@@ -80,7 +81,7 @@ namespace DataArchiveTools
 			m_dataholder = nullptr;
 		}
 
-		FilesReplacer(DataArchiveHolder* dataholder, size_t datasize) : m_dataholder(dataholder), m_datasize(datasize)
+		FilesReplacer(Hw::cFmerge* dataholder, size_t datasize) : m_dataholder(dataholder), m_datasize(datasize)
 		{
 			
 		}
@@ -96,19 +97,19 @@ namespace DataArchiveTools
 
 	inline unsigned int align(unsigned int align, unsigned int length)
 	{
-		return align - (length % align);
+		return ~(align - 1) & (length + align - 1);
 	}
 
-	inline size_t replaceFiles(FilesReplacer& files, size_t alignment)
+	inline size_t replaceFiles(FilesReplacer& files, Hw::HW_ALLOC_MODE mode)
 	{
-		if (files.m_files.empty() || files.m_dataholder->asEntry()->m_nAmountOfFiles <= 0)
+		if (files.m_files.empty() || files.m_dataholder->m_data->m_FileNum <= 0)
 			return files.m_datasize;
 
 		size_t holdersize = files.m_datasize;
 
-		DataArchiveHolder holder;
+		Hw::cFmerge holder;
 
-		holder.m_data = (char*)ModloaderHeap.AllocateMemory(holdersize, 0x1000, alignment, 0);
+		holder.m_data = (Hw::FmergeHeader*)ModloaderHeap.alloc(holdersize, 0x1000, mode, 0);
 		if (!holder.m_data)
 			return holdersize;
 
@@ -125,23 +126,23 @@ namespace DataArchiveTools
 			if (fileIndex == -1)
 				continue;
 		
-			size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
+			size_t* sizes = (size_t*)(holder.m_data + holder.m_data->m_SizeOffs);
 
-			fileSize += align(16, fileSize) - sizes[fileIndex];
+			fileSize = align(16, fileSize) - sizes[fileIndex];
 
 			sizes[fileIndex] = file.m_fileSize;
 
 			holdersize += fileSize;
 		}
 
-		if (holder.asEntry()->m_nAmountOfFiles > 1)
+		if (holder.m_data->m_FileNum > 1)
 		{
-			for (int i = 1; i < holder.asEntry()->m_nAmountOfFiles; i++)
+			for (size_t i = 1; i < holder.m_data->m_FileNum; i++)
 			{
-				size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
-				size_t* positions = (size_t*)(holder.m_data + holder.asEntry()->m_nPositionOffset);
+				size_t* sizes = (size_t*)(holder.m_data + holder.m_data->m_SizeOffs);
+				size_t* positions = (size_t*)(holder.m_data + holder.m_data->m_OffsetTblOffs);
 
-				positions[i] = positions[i - 1] + sizes[i - 1] + align(16, positions[i - 1] + sizes[i - 1]);
+				positions[i] = align(16, positions[i - 1] + align(16, sizes[i - 1])); // double align to be sure
 
 				FileStructure* file = nullptr;
 
@@ -155,15 +156,15 @@ namespace DataArchiveTools
 				}
 
 				if (!file)
-					memcpy(holder.m_data + positions[i], files.m_dataholder->getFiledata(i), files.m_dataholder->getSize(i));
+					memcpy(holder.m_data + positions[i], files.m_dataholder->getFileIndexData(i), files.m_dataholder->getFileIndexSize(i));
 				else
 					memcpy(holder.m_data + positions[i], file->m_file, file->m_fileSize);
 			}
 		}
 		else // just one file
 		{
-			size_t* sizes = (size_t*)(holder.m_data + holder.asEntry()->m_nSizesOffset);
-			size_t* positions = (size_t*)(holder.m_data + holder.asEntry()->m_nPositionOffset);
+			size_t* sizes = (size_t*)(holder.m_data + holder.m_data->m_SizeOffs);
+			size_t* positions = (size_t*)(holder.m_data + holder.m_data->m_OffsetTblOffs);
 			FileStructure* file = nullptr;
 			for (FileStructure& f : files.m_files)
 			{
@@ -174,7 +175,7 @@ namespace DataArchiveTools
 				}
 			}
 			if (!file)
-				memcpy(holder.m_data + positions[0], files.m_dataholder->getFiledata(0), files.m_dataholder->getSize(0));
+				memcpy(holder.m_data + positions[0], files.m_dataholder->getFileIndexData(0), files.m_dataholder->getFileIndexSize(0));
 			else
 				memcpy(holder.m_data + positions[0], file->m_file, file->m_fileSize);
 		}
@@ -188,13 +189,13 @@ namespace DataArchiveTools
 		return holdersize;
 	}
 
-	inline void appendFile(const std::pair<DataArchiveHolder*, const size_t>& pr, const char* filename, const std::pair<const void*, const size_t>& filePair, Hw::cHeap* allocator, int alignment)
+	inline void appendFile(const std::pair<Hw::cFmerge*, const size_t>& pr, const char* filename, const std::pair<const void*, const size_t>& filePair, Hw::cHeap* allocator, int alignment)
 	{
 
 	}
 }
 
-inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_size, const Utils::String& filename, Hw::cHeap* allocator, size_t alignment)
+inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, const Utils::String& filename, Hw::cHeap* allocator, Hw::HW_ALLOC_MODE mode)
 {
 	using namespace DataArchiveTools;
 	size_t holdersize = holder_size;
@@ -204,6 +205,8 @@ inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_si
 		*ext = 0;
 
 	foldername.shrink_to_fit();
+
+	FilesReplacer filesReplacer(holder, holder_size);
 
 	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 	{
@@ -215,10 +218,9 @@ inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_si
 		if (!dir)
 			continue;
 
-		int it = 0;
+		size_t it = 0;
 		CTimer timer;
-		FilesReplacer filesReplacer(holder, holder_size);
-		for (const char* fileName = holder->getNameByFileIndex(0); it < holder->asEntry()->m_nAmountOfFiles; fileName = holder->getNameByFileIndex(++it))
+		for (const char* fileName = holder->getFileIndexFileName(0); it < holder->m_data->m_FileNum; fileName = holder->getFileIndexFileName(++it))
 		{
 			FileSystem::File* file = dir->FindFile(fileName);
 
@@ -227,19 +229,19 @@ inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_si
 				*chr = 0;
 
 			fld.shrink_to_fit();
-			if (!strcmp((char*)holder->getFiledata(it), "DAT\0"))
+			if (!strcmp((char*)holder->getFileIndexData(it), "DAT\0"))
 			{
 				if (FileSystem::Directory* dir = prof->FindDirectory(fld); !file && dir)
 				{
-					size_t size = holder->getSize(it);
+					size_t size = holder->getFileIndexSize(it);
 					LOGINFO("[DATAWORK] We have a DAT here %s, fld = %s", fileName, fld.c_str());
-					void* fileData = ModloaderHeap.AllocateMemory(size + align(16, size), 0x1000, 1, 0);
+					void* fileData = ModloaderHeap.alloc(align(16, size), 0x1000, Hw::HW_ALLOC_PHYSICAL, 0);
 					if (fileData)
 					{
-						memcpy(fileData, holder->getFiledata(it), size);
-						DataArchiveHolder holder;
-						holder.m_data = (char*)fileData;
-						size = ReplaceDataArchiveFile(&holder, size, foldername / fileName, &ModloaderHeap, 1);
+						memcpy(fileData, holder->getFileIndexData(it), size);
+						Hw::cFmerge holder;
+						holder.m_data = (Hw::FmergeHeader*)fileData;
+						size = ReplaceDataArchiveFile(&holder, size, foldername / fileName, &ModloaderHeap, Hw::HW_ALLOC_PHYSICAL);
 						fileData = holder.m_data;
 						filesReplacer.m_files.push_back(FileStructure(fileData, size, it, fileName));
 					}
@@ -255,10 +257,23 @@ inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_si
 				continue;
 
 			LOGINFO("[DATAWORK] Found unpacked %s[%s] in %s", fileName, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
-			void* fileData = ModloaderHeap.AllocateMemory(file->m_filesize + align(16, file->m_filesize), 0x1000, 1, 0);
+			void* fileData = ModloaderHeap.alloc(align(16, file->m_filesize), 0x1000, Hw::HW_ALLOC_PHYSICAL, 0);
 			if (fileData && file->read(fileData))
 			{
-				filesReplacer.m_files.push_back(FileStructure(fileData, file->m_filesize, it, fileName));
+				FileStructure* flstr = nullptr;
+				for (FileStructure& str : filesReplacer.m_files)
+					if (str.m_fileindex == it) flstr = &str;
+
+				if (flstr)
+				{
+					LOGERROR("%s file was already added by another mod, ignoring %s...", fileName, fileName);
+					operator delete(fileData, &ModloaderHeap);
+					fileData = nullptr;
+				}
+				else
+				{
+					filesReplacer.m_files.push_back(FileStructure(fileData, file->m_filesize, it, fileName));
+				}
 			}
 			else
 			{
@@ -269,17 +284,10 @@ inline size_t ReplaceDataArchiveFile(DataArchiveHolder* holder, size_t holder_si
 				}
 			}
 		}
-		if (!filesReplacer.m_files.empty())
-		{
-			holdersize = replaceFiles(filesReplacer, alignment);
-			timer.stop();
-			LOG_TIMER(timer, "Took %.3f seconds while repacking");
-		}
-		else
-		{
-			LOGWARNING("[DATAWORK] There are no files to replace, but folder %s was found", foldername.c_str());
-		}
 	}
+	if (!filesReplacer.m_files.empty())
+		holdersize = replaceFiles(filesReplacer, mode);
+
 	return holdersize;
 }
 

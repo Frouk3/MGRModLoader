@@ -30,11 +30,17 @@ public:
 	Hotkey(int key, int modifierKey, const char *szName, void(__fastcall *cb)(Hotkey *) = nullptr, eHotkeyType type = HT_TOGGLE);
 
 	inline eHotkeyType GetHotkeyType() const { return (eHotkeyType)(m_eType & 0x7F); }
+	inline bool IsReadOnlyType() const { return (m_eType & 0x80) != 0; }
+
+	void Callback()
+	{
+		if (m_callback)
+			m_callback(this);
+	}
 
 	void Load();
 	void Save();
 	void Reset();
-	void Rebind();
 	void Update();
 	bool IsKeyPressed();
 	void Draw(const char *label);

@@ -17,7 +17,7 @@ bool ImGui::InputText(const char* label, Utils::String& buf, unsigned int flags)
 		strcpy(buffer, buf.c_str());
 	bool result = ImGui::InputText(label, buffer, sizeof(buffer), flags);
 	if (result)
-		buf.resize(strlen(buffer) + 1);
+		buf.reserve(strlen(buffer) + 1);
 
 	if (buf.data() && result)
 	{
@@ -38,7 +38,7 @@ bool ImGui::InputTextMultiline(const char* label, Utils::String& buf, unsigned i
 		strcpy(buffer, buf.c_str());
 	bool result = ImGui::InputTextMultiline(label, buffer, sizeof(buffer));
 	if (result)
-		buf.resize(strlen(buffer) + 1);
+		buf.reserve(strlen(buffer) + 1);
 
 	if (buf.data() && result)
 	{

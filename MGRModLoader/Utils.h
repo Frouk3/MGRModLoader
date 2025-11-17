@@ -11,489 +11,332 @@
 
 namespace Utils
 {
-	class String
-	{
-	private:
-		char* m_string = nullptr;
-		unsigned short m_length = 0;
-		unsigned short m_capacity = 0;
-
-		void allocate(size_t capacity)
-		{
-			if (!capacity)
-				return;
-
-			deallocate();
-
-			m_capacity = (unsigned short)capacity;
-			m_string = (char*)malloc(capacity);
-			m_length = 0;
-
-			if (m_string)
-				m_string[0] = 0;
-		}
-
-		void copyFrom(const char* str, size_t length = 0)
-		{
-			deallocate();
-
-			if (str)
-			{
-				if (!length)
-					length = strlen(str);
-
-				allocate(length + 1);
-				m_length = (unsigned short)length;
-				
-				if (m_string)
-				{
-					strcpy(m_string, str);
-					m_string[m_length] = 0;
-				}
-			}
-		}
-
-		void reallocate(size_t capacity)
-		{
-			if (m_length > capacity)
-				assert(!"New capacity cannot hold old string!");
-
-			// We don't need to set the length of string, we are reallocating the same string but with different capacity
-
-			char* src = m_string;
-
-			m_string = (char*)malloc(capacity);
-
-			if (m_string)
-			{
-				if (src)
-				{
-					strcpy(m_string, src);
-					free(src);
-				}
-				m_capacity = (unsigned short)capacity;
-			}
-		}
-
-		void deallocate()
-		{
-			if (m_string)
-			{
-				free(m_string);
-				m_string = nullptr;
-			}
-			m_length = 0;
-			m_capacity = 0;
-		}
-
-	public:
-		String() {}
-
-		String(size_t length) { allocate(length); }
-
-		String(const char* string)
-		{
-			copyFrom(string);
-		}
-
-		String(const char* string, size_t length)
-		{
-			copyFrom(string, length);
-		}
-
-		String(const char* string, int length)
-		{
-			copyFrom(string, (size_t)length);
-		}
-
-		String(const String& other)
-		{
-			copyFrom(other.m_string, other.m_length);
-		}
-
-		String(String&& other) noexcept
-		{
-			m_string = other.m_string;
-			m_length = other.m_length;
-			m_capacity = other.m_capacity;
-
-			// Avoid destructing main string
-			other.m_string = nullptr;
-			other.m_length = 0;
-			other.m_capacity = 0;
-		}
-
-		~String()
-		{
-			deallocate();
-		}
-
-		char* strcat(const char* string)
-		{
-			size_t subStrLength = strlen(string);
-			reallocate(m_length + subStrLength + 1);
-			if (m_string)
-			{
-				for (size_t i = 0; i < subStrLength; i++)
-					m_string[i + m_length] = string[i];
-
-				m_string[m_length + subStrLength] = 0;
-			}
-
-			resize();
-			return m_string;
-		}
-
-		void append(const char* string)
-		{
-			strcat(string);
-		}
-
-		void append(const Utils::String& string)
-		{
-			size_t subStrLength = string.length();
-			reallocate(m_length + subStrLength + 1);
-			if (m_string)
-			{
-				for (size_t i = 0; i < subStrLength; i++)
-					m_string[i + m_length] = string.c_str()[i];
-
-				m_string[m_length + subStrLength] = 0;
-			}
-
-			resize();
-		}
-
-		String& operator=(const String& other)
-		{
-			if (this != &other)
-			{
-				deallocate();
-				copyFrom(other.m_string, other.m_length);
-			}
-			return *this;
-		}
-
-		String& operator=(String&& other) noexcept
-		{
-			if (this != &other)
-			{
-				deallocate();
-				m_string = other.m_string;
-				m_length = other.m_length;
-				m_capacity = other.m_capacity;
-
-				other.m_string = nullptr;
-				other.m_length = 0;
-				other.m_capacity = 0;
-			}
-			return *this;
-		}
-
-		String& operator=(const char* str)
-		{
-			copyFrom(str);
-			return *this;
-		}
-
-		String& operator+=(const char* str)
-		{
-			append(str);
-			return *this;
-		}
-
-		String operator+(const char* str) const
-		{
-			String result = *this;
-			result += str;
-			return result;
-		}
-
-		char& operator[](size_t index)
-		{
-			if (index >= m_length)
-				assert(!"Index out of range!");
-
-			return m_string[index];
-		}
-
-		char& operator[](int index)
-		{
-			if (index >= m_length)
-				assert(!"Index out of range!");
-
-			return m_string[index];
-		}
-
-		String& operator/=(const String& lhs)
-		{
-			if (m_string[m_length - 1] == '\\')
-			{
-				append(lhs);
-				return *this;
-			}
-
-			append("\\");
-			append(lhs);
-			
-			return *this;
-		}
-
-		String& operator/=(const char* string)
-		{
-			if (m_string[m_length - 1] == '\\')
-			{
-				append(string);
-				return *this;
-			}
-
-			append("\\");
-			append(string);
-
-			return *this;
-		}
-
-		String operator/(const char* str) const
-		{
-			String result = *this;
-
-			if (result.m_string[result.m_length - 1] == '\\')
-				return result + str;
-
-			return result + "\\" + str;
-		}
-
-		String operator/(const String& lhs) const
-		{
-			String result = *this;
-
-			if (result.m_string[result.m_length - 1] == '\\')
-				return result + lhs;
-
-			return result + "\\" + lhs;
-		}
-
-		operator bool() const
-		{
-			return m_length > 0 || m_string != nullptr;
-		}
-
-		bool operator==(const String& other) const
-		{
-			return m_length == other.m_length && strcmp(m_string, other.m_string) == 0;
-		}
-
-		bool operator==(const char* lhs) const
-		{
-			return m_length == strlen(lhs) && strcmp(m_string, lhs) == 0;
-		}
-
-		bool operator!=(const char* lhs) const
-		{
-			return !(*this == lhs);
-		}
-
-		bool operator!=(const String& other) const
-		{
-			return !(*this == other);
-		}
-
-		size_t length() const
-		{
-			return m_length;
-		}
-
-		size_t size() const
-		{
-			return length();
-		}
-
-		int format(const char* fmt, ...)
-		{
-			va_list args;
-			va_start(args, fmt);
-
-			int length = formatV(fmt, args);
-
-			va_end(args);
-
-			return length;
-		}
-
-		int formatV(const char* fmt, va_list args)
-		{
-			int length = vsnprintf(nullptr, 0, fmt, args);
-
-			reallocate(length + 1);
-
-			vsnprintf(m_string, m_capacity, fmt, args);
-
-			return length;
-		}
-
-		char* data()
-		{
-			return m_string;
-		}
-
-		void resize()
-		{
-			m_length = (unsigned short)strlen(m_string);
-		}
-
-		const char* c_str() const
-		{
-			return m_string ? m_string : "";
-		}
-
-		operator const char* () const
-		{
-			return c_str();
-		}
-
-		size_t capacity() const
-		{
-			return m_capacity;
-		}
-
-		void clear()
-		{
-			if (m_string)
-				m_string[0] = 0;
-
-			m_length = 0;
-		}
-
-		bool empty() const
-		{
-			return m_length == 0;
-		}
-
-		void resize(size_t newsize)
-		{
-			reallocate(newsize);
-		}
-
-		char* strrchr(int _C)
-		{
-			size_t len = length();
-
-			if (len)
-			{
-				while (len)
-				{
-					if (m_string[len] == _C)
-						return m_string + len;
-
-					--len;
-				}
-			}
-
-			return nullptr;
-		}
-
-		const char* strrchr(int _C) const
-		{
-			size_t len = length();
-
-			if (len)
-			{
-				while (len)
-				{
-					if (m_string[len] == _C)
-						return m_string + len;
-
-					--len;
-				}
-			}
-
-			return nullptr;
-		}
-
-		char* strchr(int _C)
-		{
-			if (!length())
-				return nullptr;
-
-			for (size_t i = 0; i < m_length && m_string[i] != '\0'; i++)
-			{
-				if (m_string[i] == _C)
-					return m_string + i;
-			}
-
-			return nullptr;
-		}
-
-		const char* strchr(int _C) const
-		{
-			if (!length())
-				return nullptr;
-
-			for (size_t i = 0; i < m_length && m_string[i] != '\0'; i++)
-			{
-				if (m_string[i] == _C)
-					return m_string + i;
-			}
-
-			return nullptr;
-		}
-
-		String substr(size_t pos, size_t len = -1) const
-		{
-			if (pos > length())
-				return "";
-
-			if (len == -1 || pos + len > length())
-				len = length() - pos;
-
-			return String(m_string + pos, len);
-		}
-
-		const char* lower()
-		{
-			for (size_t i = 0; i < m_length; i++)
-				m_string[i] = tolower(m_string[i]);
-
-			return c_str();
-		}
-
-		const char* upper()
-		{
-			for (size_t i = 0; i < m_length; i++)
-				m_string[i] = toupper(m_string[i]);
-
-			return c_str();
-		}
-
-		// trims whitespaces from both ends
-		const char* trim()
-		{
-			if (!length())
-				return nullptr;
-
-			const char* begin = m_string;
-			const char* end = m_string + length() - 1;
-			
-			while (isspace(*begin)) begin++;
-			while (isspace(*end)) end--;
-
-			Utils::String copy = { begin, end - begin };
-			*this = copy;
-
-			return c_str();
-		}
-
-		void reserve(size_t size)
-		{
-			reallocate(size);
-		}
-
-		void shrink_to_fit()
-		{
-			resize();
-			reallocate(m_length + 1);
-		}
-	};
+    class String
+    {
+    private:
+        char* m_string = nullptr;
+        size_t m_length = 0;
+        size_t m_capacity = 0;
+
+        void allocate(size_t capacity)
+        {
+            if (!capacity) 
+                return;
+
+            deallocate();
+            m_capacity = capacity;
+            m_string = new char[capacity];
+            m_length = 0;
+            m_string[0] = '\0';
+        }
+
+        void copyFrom(const char* str, size_t length = 0)
+        {
+            deallocate();
+            if (!str) 
+                return;
+
+            if (length == 0) 
+                length = strlen(str);
+
+            allocate(length + 1);
+            m_length = length;
+            memcpy(m_string, str, length);
+            m_string[m_length] = '\0';
+        }
+
+        void reallocate(size_t capacity)
+        {
+            if (capacity <= m_capacity) 
+                return;
+
+            char* newStr = new char[capacity];
+            if (m_string)
+            {
+                memcpy(newStr, m_string, m_length + 1);
+                delete[] m_string;
+            }
+            m_string = newStr;
+            m_capacity = capacity;
+        }
+
+        void deallocate()
+        {
+            delete[] m_string;
+            m_string = nullptr;
+            m_length = 0;
+            m_capacity = 0;
+        }
+
+    public:
+        String() = default;
+
+        explicit String(size_t length) { allocate(length); }
+        String(const char* str) { copyFrom(str); }
+        String(const char* str, size_t length) { copyFrom(str, length); }
+        String(const String& other) { copyFrom(other.m_string, other.m_length); }
+
+        String(String&& other) noexcept
+            : m_string(other.m_string), m_length(other.m_length), m_capacity(other.m_capacity) {
+            other.m_string = nullptr;
+            other.m_length = other.m_capacity = 0;
+        }
+
+        ~String() { deallocate(); }
+
+        String& operator=(const String& other)
+        {
+            if (this != &other) 
+                copyFrom(other.m_string, other.m_length);
+            return *this;
+        }
+
+        String& operator=(String&& other) noexcept
+        {
+            if (this != &other)
+            {
+                deallocate();
+
+                m_string = other.m_string;
+                m_length = other.m_length;
+                m_capacity = other.m_capacity;
+                other.m_string = nullptr;
+                other.m_length = other.m_capacity = 0;
+            }
+            return *this;
+        }
+
+        String& operator=(const char* str)
+        {
+            copyFrom(str);
+            return *this;
+        }
+
+        void append(const char* str)
+        {
+            if (!str) 
+                return;
+            size_t subLen = strlen(str);
+            reallocate(m_length + subLen + 1);
+            memcpy(m_string + m_length, str, subLen + 1);
+            m_length += subLen;
+        }
+
+        void append(const String& other)
+        {
+            append(other.c_str());
+        }
+
+        String& operator+=(const char* str) { append(str); return *this; }
+        String operator+(const char* str) const { String s(*this); s.append(str); return s; }
+
+        String& operator+=(const Utils::String& str) { append(str); return *this; }
+        String operator+(const Utils::String& str) const { String s(*this); s.append(str); return s; }
+
+        bool operator==(const String& other) const
+        {
+            return m_length == other.m_length && strcmp(c_str(), other.c_str()) == 0;
+        }
+
+        bool operator==(const char* str) const
+        {
+            return str && m_length == strlen(str) && strcmp(c_str(), str) == 0;
+        }
+
+        bool operator!=(const String& other) const { return !(*this == other); }
+        bool operator!=(const char* str) const { return !(*this == str); }
+
+        String operator/(const String& other) const
+        {
+            String copy = { *this };
+
+            if (copy[copy.m_length - 1] != '\\')
+                copy.append("\\");
+
+            copy.append(other);
+
+            return copy;
+        }
+
+        String operator/(const char* other) const
+        {
+            String copy = { *this };
+
+            if (copy[copy.m_length - 1] != '\\')
+                copy.append("\\");
+
+            copy.append(other);
+
+            return copy;
+        }
+
+        String& operator/=(const char* str)
+        {
+            if (m_string[m_length - 1] != '\\')
+                append("\\");
+
+            append(str);
+            return *this;
+        }
+
+        String& operator/=(const Utils::String& str)
+        {
+            if (m_string[m_length - 1] != '\\')
+                append("\\");
+
+            append(str);
+            return *this;
+        }
+
+        char& operator[](size_t idx)
+        {
+            assert(idx < m_length);
+            return m_string[idx];
+        }
+
+        const char& operator[](size_t idx) const
+        {
+            assert(idx < m_length);
+            return m_string[idx];
+        }
+
+        size_t length() const { return m_length; }
+        size_t size() const { return m_length; }
+        size_t capacity() const { return m_capacity; }
+        bool empty() const { return m_length == 0; }
+
+        void clear()
+        {
+            if (m_string) 
+                m_string[0] = '\0';
+            m_length = 0;
+        }
+
+        void reserve(size_t cap) { reallocate(cap); }
+
+        void shrink_to_fit()
+        {
+            if (m_length + 1 < m_capacity)
+            {
+                char* newStr = new char[m_length + 1];
+                memcpy(newStr, m_string, m_length + 1);
+                delete[] m_string;
+                m_string = newStr;
+                m_capacity = m_length + 1;
+            }
+        }
+
+        const char* c_str() const { return m_string ? m_string : ""; }
+        char* data() { return m_string; }
+
+        String substr(size_t pos, size_t len = -1) const
+        {
+            if (pos >= m_length) return {};
+            if (len == -1 || pos + len > m_length)
+                len = m_length - pos;
+            return String(m_string + pos, len);
+        }
+
+        const char* lower()
+        {
+            for (size_t i = 0; i < m_length; ++i) m_string[i] = tolower((unsigned char)m_string[i]);
+            return c_str();
+        }
+
+        const char* upper()
+        {
+            for (size_t i = 0; i < m_length; ++i) m_string[i] = toupper((unsigned char)m_string[i]);
+            return c_str();
+        }
+
+        int format(const char* fmt, ...)
+        {
+            va_list args;
+            va_start(args, fmt);
+            int len = formatV(fmt, args);
+            va_end(args);
+            return len;
+        }
+
+        int formatV(const char* fmt, va_list args)
+        {
+            int len = vsnprintf(nullptr, 0, fmt, args);
+
+            reallocate(len + 1);
+            vsnprintf(m_string, m_capacity, fmt, args);
+            m_length = len;
+            return len;
+        }
+
+        void resize()
+        {
+            m_length = strlen(c_str());
+        }
+
+        char* strrchr(int _C)
+        {
+            size_t len = length();
+
+            if (len)
+            {
+                while (len)
+                {
+                    if (m_string[len] == _C)
+                        return m_string + len;
+
+                    --len;
+                }
+            }
+
+            return nullptr;
+        }
+
+        const char* strrchr(int _C) const
+        {
+            size_t len = length();
+
+            if (len)
+            {
+                while (len)
+                {
+                    if (m_string[len] == _C)
+                        return m_string + len;
+
+                    --len;
+                }
+            }
+
+            return nullptr;
+        }
+
+        char* strchr(int _C)
+        {
+            if (!length())
+                return nullptr;
+
+            for (size_t i = 0; i < m_length && m_string[i] != '\0'; i++)
+            {
+                if (m_string[i] == _C)
+                    return m_string + i;
+            }
+
+            return nullptr;
+        }
+
+        const char* strchr(int _C) const
+        {
+            if (!length())
+                return nullptr;
+
+            for (size_t i = 0; i < m_length && m_string[i] != '\0'; i++)
+            {
+                if (m_string[i] == _C)
+                    return m_string + i;
+            }
+
+            return nullptr;
+        }
+    };
 
 	inline char* formatPath(char* buffer)
 	{

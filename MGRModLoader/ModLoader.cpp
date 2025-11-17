@@ -43,7 +43,7 @@ void ModLoader::Startup()
 	if (!Profiles.empty())
 	{
 		Profiles[0]->m_place = 0;
-		for (size_t i = 1; i < Profiles.size(); i++)
+		for (size_t i = 1; i < Profiles.getSize(); i++)
 			Profiles[i]->m_place = Profiles[i - 1]->m_place + 1;
 
 		SortProfiles();
@@ -114,8 +114,8 @@ void ModLoader::Save(bool bSilent)
 
 	remove((GetModFolder() / "profiles.ini").c_str()); // Delete old profiles.ini to not mess up with old profiles or new ones
 
-	ini = IniReader(GetModFolder() / "profiles.ini");
-	FILE* iniFile = fopen(GetModFolder() / "profiles.ini", "a");
+	ini = IniReader((GetModFolder() / "profiles.ini").c_str());
+	FILE* iniFile = fopen((GetModFolder() / "profiles.ini").c_str(), "a");
 
 	if (!bSilent) LOGINFO("Saving profiles...");
 
@@ -147,7 +147,7 @@ void ModLoader::Load()
 void ModLoader::ReadProfiles()
 {
 	LOGINFO("Reading profiles...");
-	IniReader ini(GetModFolder() / "profiles.ini");
+	IniReader ini((GetModFolder() / "profiles.ini").c_str());
 	FileSystem::DirectoryWalk([&](FileSystem::Directory& dir) -> void
 		{
 			ModProfile* profile = new ModProfile();
@@ -164,7 +164,7 @@ void ModLoader::ReadProfiles()
 
 			LOGINFO("Found profile %s(%s, %d)", profile->m_name.c_str(), profile->m_bEnabled ? "enabled" : "disabled", profile->m_place);
 
-			Profiles.push_back(profile);
+			Profiles.pushBack(profile);
 		}, GetModFolder().c_str());
 	LOGINFO("Reading profiles done.");
 }
@@ -294,11 +294,11 @@ void ModLoader::ModExtraInfo::Load(FileSystem::File* modFile)
 
 	if (m_ID.empty())
 	{
-		m_ID.resize(8);
+		m_ID.reserve(8);
 		m_ID.format("%X", Utils::strhash(m_title));
 
 		m_ID.resize();
-		m_ID.resize(m_ID.length());
+		m_ID.shrink_to_fit();
 	}
 }
 
@@ -326,31 +326,31 @@ void ModLoader::ModExtraInfo::Save(FileSystem::File *modFile)
 		m_DLLFile = "\"\"";
 	}
 
-	IniReader ini(modFile->m_path);
+	IniReader ini(modFile->m_path.c_str());
 
-	ini.WriteString("Desc", "Author", m_author);
-	ini.WriteString("Desc", "Title", m_title);
-	ini.WriteString("Desc", "Version", m_version);
-	ini.WriteString("Desc", "Description", m_description);
-	ini.WriteString("Desc", "Date", m_date);
-	ini.WriteString("Desc", "AuthorURL", m_authorURL);
+	ini.WriteString("Desc", "Author", m_author.c_str());
+	ini.WriteString("Desc", "Title", m_title.c_str());
+	ini.WriteString("Desc", "Version", m_version.c_str());
+	ini.WriteString("Desc", "Description", m_description.c_str());
+	ini.WriteString("Desc", "Date", m_date.c_str());
+	ini.WriteString("Desc", "AuthorURL", m_authorURL.c_str());
 
-	ini.WriteString("Main", "UpdateServer", m_UpdateServer);
-	ini.WriteString("Main", "SaveFile", m_SaveFile);
-	ini.WriteString("Main", "ID", m_ID);
+	ini.WriteString("Main", "UpdateServer", m_UpdateServer.c_str());
+	ini.WriteString("Main", "SaveFile", m_SaveFile.c_str());
+	ini.WriteString("Main", "ID", m_ID.c_str());
 	ini.WriteInt("Main", "IncludeDirCount", m_Dirs.size());
 	if (!m_Dirs.empty())
 	{
 		for (size_t i = 0; i < m_Dirs.size(); i++)
 		{
 			Utils::String dirString = Utils::String("\"") + m_Dirs[i] + "\"";
-			ini.WriteString("Main", Utils::format("IncludeDir%d", i), dirString);
+			ini.WriteString("Main", Utils::format("IncludeDir%d", i).c_str(), dirString.c_str());
 		}
 	}
 	ini.WriteInt("Main", "DependsCount", m_DependsCount);
-	ini.WriteString("Main", "DLLFile", m_DLLFile);
-	ini.WriteString("Main", "CodeFile", m_CodeFile);
-	ini.WriteString("Main", "ConfigSchemaFile", m_ConfigSchemaFile);
+	ini.WriteString("Main", "DLLFile", m_DLLFile.c_str());
+	ini.WriteString("Main", "CodeFile", m_CodeFile.c_str());
+	ini.WriteString("Main", "ConfigSchemaFile", m_ConfigSchemaFile.c_str());
 }
 
 FileSystem::File* ModLoader::ModProfile::FindFile(const Utils::String& filename)
@@ -395,7 +395,7 @@ void ModLoader::ModProfile::Startup()
 
 			if (!strcmp(file.getName(), "mod.ini"))
 				modIni = new FileSystem::File(file);
-		}, m_root.m_path);
+		}, m_root.m_path.c_str());
 
 	if (modIni)
 	{
@@ -411,7 +411,7 @@ void ModLoader::ModProfile::Startup()
 		{
 			for (auto& dll : m_ModInfo->m_DLLs)
 			{
-				if (dll.empty() || !FileSystem::PathExists(GetMyPath() / dll))
+				if (dll.empty() || !FileSystem::PathExists((GetMyPath() / dll).c_str()))
 					continue;
 
 				LOGINFO("Loading %s...", dll.c_str());
@@ -419,7 +419,11 @@ void ModLoader::ModProfile::Startup()
 
 				if (!hm)
 				{
-					LOGERROR("Failed to load %s(errno = %d)", dll.c_str(), errno);
+					int err = errno;
+					if (err)
+						LOGERROR("Failed to load %s(errno = %d)", dll.c_str(), err);
+					else
+						LOGERROR("Failed to load %s(GetLastError = %d)", dll.c_str(), GetLastError());
 					return;
 				}
 
@@ -444,15 +448,18 @@ void ModLoader::ModProfile::Startup()
 						if (char* ext = name.strrchr('.'); ext)
 							*ext = 0;
 
+						if (char *slash = name.strchr('\\'); slash)
+							name = slash + 1;
+
 						if (dir == ".")
 						{
-							if (FileSystem::PathExists(GetMyPath() / name))
+							if (FileSystem::PathExists((GetMyPath() / name).c_str()))
 								includePath.push_back(name);
 						}
 						else
 						{
-							if (FileSystem::PathExists(GetMyPath() / dir / name))
-								includePath.push_back(dir / name);
+							if (FileSystem::PathExists((GetMyPath() / dir / name).c_str()))
+								includePath.push_back(dir / name.c_str());
 						}
 					}
 				};
