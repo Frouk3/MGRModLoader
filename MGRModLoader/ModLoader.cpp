@@ -216,9 +216,9 @@ void ModLoader::OpenScripts()
 
 void ModLoader::SortProfiles()
 {
-	Profiles.quickSort([](ModLoader::ModProfile*& a, ModLoader::ModProfile*& b) -> bool
+	Profiles.quickSort([](ModLoader::ModProfile** a, ModLoader::ModProfile** b) -> bool const
 		{
-			return a->m_place < b->m_place;
+			return (*a)->m_place < (*b)->m_place;
 		});
 }
 

@@ -45,7 +45,7 @@ namespace CriWare
 		for (auto& work : aBinders)
 		{
 			if (work == binderWork)
-				aBinders.erase(work);
+				aBinders.erase(&work);
 		}
 
 		operator delete(binderWork, &ModloaderHeap);

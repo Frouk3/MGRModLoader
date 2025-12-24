@@ -11,7 +11,7 @@ CREATE_HOOK(false, shared::base + 0x61E8A0, void, __cdecl, InputUpdate)
 	if (gui::GUIHotkey.m_bToggle)
 		return;
 
-	oInputUpdate();
+	return oInputUpdate();
 }
 
 CREATE_HOOK(false, shared::base + 0x9EAF60, size_t, __cdecl, GetFilesize, const char* file)
@@ -141,7 +141,7 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_Load, FileRead::cW
 			// Panic, we can't allocate file data for modified file
 
 			LOGERROR("[FILEREAD] Tried to allocate memory for modified file, but failed! [%s, %s]", file->m_path.c_str(), Utils::getProperSize(file->m_filesize).c_str());
-			pThis->cleanup();
+			pThis->moveFileNone();
 			pThis->m_MoveRno = pThis->MOVE_ALLOC;
 			pThis->m_Flag |= 0x10000;
 			pThis->m_WaitCount = 0;
@@ -159,7 +159,7 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_Load, FileRead::cW
 
 		file->read(pThis->m_pFileData);
 
-		pThis->registerFile();
+		pThis->registResource();
 
 		pThis->m_MoveRno = pThis->MOVE_FILE_VALID;
 		pThis->m_WaitCount = 0;

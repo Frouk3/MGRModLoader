@@ -1,4 +1,3 @@
-#define SHARED_USE_EX_FUNCS
 #include <shared.h>
 #include <Events.h>
 #include "gui.h"
@@ -75,7 +74,6 @@ public:
 
 		Events::OnUpdateEvent.after += []()
 			{
-				shared::ExPressKeyUpdate();
 				if (g_GameMenuStatus == InMenu)
 					gui::GUIHotkey.Update();
 			};
@@ -777,7 +775,7 @@ void gui::RenderWindow()
 					{
 						ModLoader::ModProfile*& with = ModLoader::Profiles[profileToSwap];
 						ModLoader::ModProfile*& element = ModLoader::Profiles[profileToMove];
-						ModLoader::Profiles.swap(with, element);
+						std::swap(with, element);
 						std::swap(with->m_place, element->m_place);
 						bRequireMoving = false;
 					}
