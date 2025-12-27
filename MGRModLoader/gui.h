@@ -1,10 +1,11 @@
 #pragma once
 #include "Hotkey.h"
 #include <vadefs.h>
+#include <Hw.h>
 
 namespace gui
 {
-	inline Hotkey GUIHotkey = Hotkey(0x71, 0xA4, "GUIHotkey", nullptr, Hotkey::eHotkeyType(Hotkey::HT_TOGGLE));
+	inline Hotkey GUIHotkey = Hotkey(Hw::KB_F2, Hw::KB_ALT_L, "GUIHotkey", nullptr, Hotkey::eHotkeyType(Hotkey::HT_TOGGLE));
 
 	void RenderWindow();
 

@@ -336,12 +336,50 @@ namespace Utils
 
             return nullptr;
         }
+
+        String split(char delimiter, size_t index) const
+        {
+            size_t start = 0;
+            size_t end = 0;
+            size_t currentIndex = 0;
+            while (end <= m_length)
+            {
+                if (end == m_length || m_string[end] == delimiter)
+                {
+                    if (currentIndex == index)
+                    {
+                        return substr(start, end - start);
+                    }
+                    currentIndex++;
+                    start = end + 1;
+                }
+                end++;
+            }
+            return {};
+		}
+
+        String split(char delimiter) const
+        {
+            return split(delimiter, 0);
+		}
+
+        void erase(size_t pos, size_t len)
+        {
+            if (pos >= m_length) return;
+            if (pos + len > m_length)
+                len = m_length - pos;
+            memmove(m_string + pos, m_string + pos + len, m_length - (pos + len) + 1);
+            m_length -= len;
+		}
     };
 
 	inline char* formatPath(char* buffer)
 	{
-		while (char* chr = strchr(buffer, '/'))
-			*chr = '\\';
+		for (int i = strlen(buffer) - 1; i >= 0; i--)
+        {
+            if (buffer[i] == '/')
+                buffer[i] = '\\';
+		}
 
 		return buffer;
 	}
@@ -351,10 +389,9 @@ namespace Utils
 		static char buff[MAX_PATH];
 		memset(buff, 0, MAX_PATH);
 
-		strcpy(buff, buffer);
+        strcpy_s(buff, MAX_PATH, buffer);
 
-		while (char* chr = strchr(buff, '/'))
-			*chr = '\\';
+        formatPath(buff);
 
 		return buff;
 	}
