@@ -188,7 +188,7 @@ bool FileSystem::cReader::isCanceled() const
 
 bool FileSystem::cReader::isAlive() const
 {
-	return m_rno != MOVE_NONE;
+	return m_rno != MOVE_NONE && m_refCount > 0;
 }
 
 void FileSystem::cReader::wait()
@@ -536,7 +536,8 @@ FileSystem::eReadId FileSystem::ReadAsync(const char* path, void* filedata, size
 	pWork->startReadAsync();
 	pWork->m_readId = (eReadId)CycleReadId();
 	pWork->addRef();
-	EnqueueReader(pWork);
+	if (pWork->m_buffersize <= cReader::ChunkSize) pWork->wait(); // We can read it immediately
+	else EnqueueReader(pWork);
 
 	m_ReaderFactoryCriticalSection.leave();
 	return pWork->m_readId;
@@ -631,14 +632,7 @@ bool FileSystem::IsReadCanceled(eReadId reader)
 
 void FileSystem::CancelRead(eReadId reader)
 {
-	for (auto& r : m_ReaderFactory)
-	{
-		if (r.m_readId == reader)
-		{
-			r.release();
-			return;
-		}
-	}
+	Release(reader);
 }
 
 void* FileSystem::GetReadFileData(eReadId reader)
@@ -671,6 +665,74 @@ bool FileSystem::IsReadComplete(eReadId reader)
 			return r.isComplete();
 	}
 	return false;
+}
+
+void FileSystem::AddRef(eReadId reader)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_readId == reader)
+		{
+			r.addRef();
+			return;
+		}
+	}
+}
+
+void FileSystem::AddUse(eReadId reader)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_readId == reader)
+		{
+			r.addUse();
+			return;
+		}
+	}
+}
+
+void FileSystem::ReleaseUse(eReadId reader)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_readId == reader)
+		{
+			r.releaseUse();
+			return;
+		}
+	}
+}
+
+void FileSystem::Release(eReadId reader)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_readId == reader)
+		{
+			r.release();
+			return;
+		}
+	}
+}
+
+bool FileSystem::HasActiveReader(const char* path)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_file.m_path == path && r.isAlive())
+			return true;
+	}
+	return false;
+}
+
+FileSystem::eReadId FileSystem::GetActiveReader(const char* path)
+{
+	for (auto& r : m_ReaderFactory)
+	{
+		if (r.m_file.m_path == path && r.isAlive())
+			return r.m_readId;
+	}
+	return READID_INVALID;
 }
 
 void FileSystem::RemoveDirectoryRecursively(const char* path)
@@ -838,11 +900,7 @@ FileSystem::File* FileSystem::Directory::FindFile(const Utils::String& filepath)
 
 	Utils::String path = filepath;
 	char* buf = path.data();
-	for (size_t i = 0, n = path.size(); i < n; ++i)
-	{
-		if (buf[i] == '/')
-			buf[i] = '\\';
-	}
+	Utils::formatPath(buf);
 
 	const char* filename = path.c_str();
 	if (const char* chr = path.strrchr('\\'); chr)

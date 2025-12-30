@@ -502,6 +502,22 @@ public:
 
 				ThreadWork::ClearThreads();
 
+				for (int i = 0; i < CriWare::aBinders.getSize(); ++i)
+				{
+					auto& binder = CriWare::aBinders[i];
+					if (!binder)
+						continue;
+
+					if (binder->m_BinderHandle)
+					{
+						CriFsBinderHn_free(binder->m_BinderHandle);
+						binder->m_BinderHandle = nullptr;
+					}
+					operator delete(binder, (Hw::cHeap*)nullptr);
+				}
+
+				CriWare::aBinders.clear();
+
 				Updater::SaveConfig();
 				Logger::SaveConfig();
 				ModLoader::Shutdown();

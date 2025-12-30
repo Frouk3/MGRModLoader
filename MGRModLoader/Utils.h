@@ -138,12 +138,12 @@ namespace Utils
 
         bool operator==(const String& other) const
         {
-            return m_length == other.m_length && strcmp(c_str(), other.c_str()) == 0;
+			return stricmp(c_str(), other.c_str()) == 0;
         }
 
         bool operator==(const char* str) const
         {
-            return str && m_length == strlen(str) && strcmp(c_str(), str) == 0;
+			return stricmp(c_str(), str) == 0;
         }
 
         bool operator!=(const String& other) const { return !(*this == other); }

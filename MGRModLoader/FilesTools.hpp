@@ -5,6 +5,9 @@
 #include "ModLoader.h"
 #include <Hw.h>
 #include <HwDvd.h>
+#include <bit>
+#include <unordered_map>
+#include <unordered_set>
 #define TAKE_TIMER_SNAPSHOTS 0
 #include "Timer.hpp"
 
@@ -15,7 +18,7 @@ namespace CriWare
 
 	inline Hw::cDvdCriFsBinder* getFreeBinderWork()
 	{
-		Hw::cDvdCriFsBinder* pWork = new(&ModloaderHeap) Hw::cDvdCriFsBinder();
+		Hw::cDvdCriFsBinder* pWork = new(ModloaderHeap) Hw::cDvdCriFsBinder();
 
 		if (!pWork)
 			return nullptr;
@@ -45,7 +48,10 @@ namespace CriWare
 		for (auto& work : aBinders)
 		{
 			if (work == binderWork)
+			{
 				aBinders.erase(&work);
+				break;
+			}
 		}
 
 		operator delete(binderWork, &ModloaderHeap);
@@ -58,7 +64,7 @@ namespace DataArchiveTools
 	{
 		void* m_file;
 		size_t m_fileSize;
-		size_t m_fileindex = -1;
+		size_t m_fileindex = (size_t)-1;
 		Utils::String m_filename;
 		bool m_owned = false;
 
@@ -68,7 +74,8 @@ namespace DataArchiveTools
 			m_fileSize = 0;
 		}
 
-		FileStructure(void* filedata, size_t filesize, size_t fileindex, const char* filename, bool owned) : m_file(filedata), m_fileSize(filesize), m_fileindex(fileindex), m_filename(filename), m_owned(owned) {};
+		FileStructure(void* filedata, size_t filesize, size_t fileindex, const char* filename, bool owned)
+			: m_file(filedata), m_fileSize(filesize), m_fileindex(fileindex), m_filename(filename), m_owned(owned) {}
 	};
 
 	struct FilesReplacer
@@ -77,7 +84,7 @@ namespace DataArchiveTools
 		size_t m_datasize;
 		std::vector<FileStructure> m_files;
 
-		FilesReplacer() { }
+		FilesReplacer() = default;
 
 		FilesReplacer(Hw::cFmerge dataholder, size_t datasize) : m_dataholder(dataholder), m_datasize(datasize) { }
 
@@ -95,17 +102,19 @@ namespace DataArchiveTools
 		}
 	};
 
-	inline unsigned int align(unsigned int align, unsigned int length)
+	inline size_t align(size_t alignment, size_t length)
 	{
-		return ~(align - 1) & (length + align - 1);
+		if (alignment == 0)
+			return length;
+
+		return ~(alignment - 1u) & (length + alignment - 1u);
 	}
 
-	// Detects Fmerge ("DAT\0") by magic, regardless of file extension
 	inline bool isFmergeBuffer(const void* data, size_t size)
 	{
 		if (!data || size < 4)
 			return false;
-		const unsigned char* p = static_cast<const unsigned char*>(data);
+		const unsigned char* p = (const unsigned char*)data;
 		return (p[0] == 'D' && p[1] == 'A' && p[2] == 'T' && p[3] == 0);
 	}
 
@@ -116,28 +125,20 @@ namespace DataArchiveTools
 			return 1;
 
 		size_t longestName = 0;
-		for (FileStructure& file : files)
+		for (const FileStructure& file : files)
+			longestName = max(longestName, file.m_filename.length() + 1);
+
+		auto bitWidth = [](size_t value) -> unsigned int
 		{
-			if (file.m_filename.length() > longestName)
-				longestName = file.m_filename.length() + 1;
-		}
+			return value == 0 ? 0u : (unsigned int)std::bit_width(value);
+		};
 
-		auto intLength = [](size_t value) -> unsigned int
-			{
-				unsigned int length = 0;
-				while (value)
-				{
-					value >>= 1;
-					length++;
-				}
-				return length;
-			};
-
-		unsigned int shift = min(31, 32 - intLength(files.size()));
-		unsigned int bucketSize = 1 << (31 - shift);
+		unsigned int shift = min(31u, 32u - bitWidth(files.size()));
+		unsigned int bucketSize = 1u << (31u - shift);
 
 		std::vector<short> bucketTbl(bucketSize, -1);
 		std::vector<std::pair<unsigned int, short>> hashTbl;
+		hashTbl.reserve(files.size());
 		for (size_t i = 0; i < files.size(); i++)
 		{
 			unsigned int hash = crc32lower(files[i].m_filename.c_str());
@@ -145,9 +146,9 @@ namespace DataArchiveTools
 		}
 
 		std::sort(hashTbl.begin(), hashTbl.end(), [shift](const std::pair<unsigned int, short>& a, const std::pair<unsigned int, short>& b)
-			{
-				return (a.first >> shift) < (b.first >> shift);
-			});
+		{
+			return (a.first >> shift) < (b.first >> shift);
+		});
 
 		for (size_t i = 0; i < hashTbl.size(); i++)
 		{
@@ -167,11 +168,11 @@ namespace DataArchiveTools
 		BinHashMap binHashMap;
 		binHashMap.shift = shift;
 		binHashMap.bucketTblOffs = 0x10;
-		binHashMap.hashTblOffs = binHashMap.bucketTblOffs + sizeof(short) * bucketSize;
-		binHashMap.fileIndecesTblOffs = binHashMap.hashTblOffs + sizeof(UINT32) * hashTbl.size();
+		binHashMap.hashTblOffs = binHashMap.bucketTblOffs + (sizeof(short) * bucketSize);
+		binHashMap.fileIndecesTblOffs = binHashMap.hashTblOffs + (sizeof(UINT32) * hashTbl.size());
 
 		Hw::FmergeHeader header;
-		*(unsigned int*)header.magic = 0x00544144; // "DAT\0"
+		*(unsigned int*)header.magic = 0x00544144;
 		header.m_FileNum = files.size();
 		header.m_OffsetTblOffs = 0x20;
 		header.m_ExtOffs = header.m_OffsetTblOffs + sizeof(size_t) * files.size();
@@ -180,45 +181,45 @@ namespace DataArchiveTools
 		header.m_HashMapOffs = header.m_SizeOffs + sizeof(size_t) * files.size();
 
 		auto WriteInt = [&](size_t value)
-			{
-				fwrite(&value, sizeof(size_t), 1, pFile);
-			};
+		{
+			fwrite(&value, sizeof(size_t), 1, pFile);
+		};
 
 		auto WriteShort = [&](short value)
-			{
-				fwrite(&value, sizeof(short), 1, pFile);
-			};
+		{
+			fwrite(&value, sizeof(short), 1, pFile);
+		};
 
 		auto WriteBytes = [&](const void* data, size_t size)
-			{
-				fwrite(data, 1, size, pFile);
-			};
+		{
+			fwrite(data, 1, size, pFile);
+		};
 
 		auto WriteByte = [&](unsigned char value)
-			{
-				fwrite(&value, 1, 1, pFile);
-			};
+		{
+			fwrite(&value, 1, 1, pFile);
+		};
 
 		auto WriteSetBytes = [&](unsigned char value, size_t size)
-			{
-				for (size_t i = 0; i < size; i++)
-					fwrite(&value, 1, 1, pFile);
-			};
+		{
+			for (size_t i = 0; i < size; i++)
+				fwrite(&value, 1, 1, pFile);
+		};
 
 		auto Seek = [&](size_t offset)
-			{
-				fseek(pFile, offset, SEEK_SET);
-			};
+		{
+			fseek(pFile, (long)offset, SEEK_SET);
+		};
 
 		auto Skip = [&](size_t size)
-			{
-				fseek(pFile, size, SEEK_CUR);
-			};
+		{
+			fseek(pFile, (long)size, SEEK_CUR);
+		};
 
 		auto WriteString = [&](const Utils::String& str, size_t maxLength)
-			{
-				WriteBytes(str.c_str(), maxLength == -1 ? str.length() + 1 : maxLength);
-			};
+		{
+			WriteBytes(str.c_str(), maxLength == (size_t)-1 ? str.length() + 1 : maxLength);
+		};
 
 		WriteBytes(&header, sizeof(Hw::FmergeHeader));
 		WriteInt(0);
@@ -245,12 +246,12 @@ namespace DataArchiveTools
 		WriteInt(longestName);
 		for (size_t i = 0; i < files.size(); i++)
 		{
-			Seek(header.m_NamesOffs + sizeof(size_t) + longestName * i);
-			WriteString(files[i].m_filename, -1);
+			Seek(header.m_NamesOffs + sizeof(int) + i * longestName);
+			WriteString(files[i].m_filename, (size_t)-1);
 			WriteSetBytes(0, longestName - files[i].m_filename.length() + 1);
 		}
 
-		WriteShort(0); // pad??
+		WriteShort(0);
 		Seek(header.m_SizeOffs);
 		for (size_t i = 0; i < files.size(); i++)
 			WriteInt(files[i].m_fileSize);
@@ -267,13 +268,13 @@ namespace DataArchiveTools
 		for (size_t i = 0; i < hashTbl.size(); i++)
 			WriteShort(hashTbl[i].second);
 
-		Seek(align(0x1000, ftell(pFile)));
+		Seek(align(0x1000, (size_t)ftell(pFile)));
 		for (size_t i = 0; i < files.size(); i++)
 		{
 			int ptr = ftell(pFile);
 			Seek(header.m_OffsetTblOffs + sizeof(size_t) * i);
-			WriteInt(ptr);
-			Seek(ptr);
+			WriteInt((size_t)ptr);
+			Seek((size_t)ptr);
 			WriteBytes(files[i].m_file, files[i].m_fileSize);
 			Skip(align(0x100, files[i].m_fileSize) - files[i].m_fileSize);
 		}
@@ -285,7 +286,7 @@ namespace DataArchiveTools
 
 	inline size_t replaceFiles(FilesReplacer& files, Hw::HW_ALLOC_MODE mode, const Utils::String& path)
 	{
-		if (files.m_files.empty() || files.m_dataholder.m_data->m_FileNum <= 0)
+		if (files.m_files.empty() || files.m_dataholder.m_data->m_FileNum == 0)
 			return (size_t)-1;
 
 		std::vector<FileStructure> newFiles;
@@ -302,15 +303,16 @@ namespace DataArchiveTools
 			newFiles.clear();
 		};
 
-		auto findReplacementIndex = [&](const char* name) -> int
+		std::unordered_map<std::string, size_t> replacementLookup;
+
+		auto toLowerCopy = [](const char* s) -> std::string
 		{
-			for (size_t j = 0; j < files.m_files.size(); ++j)
-			{
-				if (stricmp(files.m_files[j].m_filename.c_str(), name) == 0)
-					return (int)j;
-			}
-			return -1;
+			return Utils::String(s).lower();
 		};
+
+		replacementLookup.reserve(files.m_files.size());
+		for (size_t idx = 0; idx < files.m_files.size(); ++idx)
+			replacementLookup[toLowerCopy(files.m_files[idx].m_filename.c_str())] = idx;
 
 		std::vector<bool> consumed(files.m_files.size(), false);
 
@@ -320,16 +322,16 @@ namespace DataArchiveTools
 			size_t filesize = files.m_dataholder.getFileIndexSize(i);
 			void* filedata = files.m_dataholder.getFileIndexData(i);
 
-			int repIdx = findReplacementIndex(filename);
-			if (repIdx >= 0)
+			std::string filenameLower = toLowerCopy(filename);
+			auto it = replacementLookup.find(filenameLower);
+			if (it != replacementLookup.end())
 			{
-				const auto& rep = files.m_files[(size_t)repIdx];
-				newFiles.push_back(FileStructure(rep.m_file, rep.m_fileSize, i, filename, false)); // memory owned by replacer
-				consumed[(size_t)repIdx] = true;
+				const auto& rep = files.m_files[it->second];
+				newFiles.emplace_back(rep.m_file, rep.m_fileSize, i, filename, false);
+				consumed[it->second] = true;
 				continue;
 			}
 
-			// No replacement -> copy original into temp buffer we own
 			void* newData = ModloaderHeap.alloc(filesize, 0x1000, mode, 0);
 			if (!newData)
 			{
@@ -338,21 +340,19 @@ namespace DataArchiveTools
 				return (size_t)-1;
 			}
 			memcpy(newData, filedata, filesize);
-			newFiles.push_back(FileStructure(newData, filesize, i, filename, true)); // owned by us
+			newFiles.emplace_back(newData, filesize, i, filename, true);
 		}
 
-		// Append brand-new files that didn't exist in the original archive
 		for (size_t j = 0; j < files.m_files.size(); ++j)
 		{
 			if (consumed[j])
 				continue;
 
-			const auto& rep = files.m_files[j];
-			newFiles.push_back(FileStructure(rep.m_file, rep.m_fileSize, (size_t)-1, rep.m_filename.c_str(), false)); // memory owned by replacer
+			const FileStructure& rep = files.m_files[j];
+			newFiles.emplace_back(rep.m_file, rep.m_fileSize, (size_t)-1, rep.m_filename.c_str(), false);
 			LOGINFO("[DAT_TOOLS] Appended new file into archive: %s", rep.m_filename.c_str());
 		}
 
-		// Sort by name to keep indexes stable for hashing
 		std::sort(newFiles.begin(), newFiles.end(), [](const FileStructure& a, const FileStructure& b)
 		{
 			return strcmp(a.m_filename.c_str(), b.m_filename.c_str()) < 0;
@@ -385,7 +385,6 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 
 	DataArchiveTools::FilesReplacer replacer(*holder, holder_size);
 
-	// Helpers
 	auto sanitizeDots = [](const Utils::String& in) -> Utils::String
 	{
 		Utils::String out = in;
@@ -395,16 +394,14 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 		return out;
 	};
 
-	auto toLowerCopy = [](const char* s) -> std::string
+	auto toLowerCopy = [](const char* s) -> Utils::String
 	{
-		std::string r = s ? s : "";
-		std::transform(r.begin(), r.end(), r.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-		return r;
+		return Utils::String(s).lower();
 	};
 
-	auto sanitizeDotsLower = [&](const char* s) -> std::string
+	auto sanitizeDotsLower = [&](const char* s) -> Utils::String
 	{
-		std::string r = toLowerCopy(s);
+		Utils::String r = toLowerCopy(s);
 		for (char& c : r)
 			if (c == '.')
 				c = '_';
@@ -421,9 +418,9 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 		return Utils::String(b, (size_t)(p - b));
 	};
 
-	std::vector<std::string> nestedNamesLower;
-	std::vector<std::string> nestedNamesLowerSanitized;
+	std::vector<Utils::String> nestedNamesLower;
 	nestedNamesLower.reserve(holder->getFileAmount());
+	std::vector<Utils::String> nestedNamesLowerSanitized;
 	nestedNamesLowerSanitized.reserve(holder->getFileAmount());
 	for (size_t i = 0; i < holder->getFileAmount(); ++i)
 	{
@@ -439,17 +436,47 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 
 	auto isNestedTopSegment = [&](const Utils::String& rel) -> bool
 	{
-		std::string segLower = toLowerCopy(firstPathSegment(rel).c_str());
-		std::string segLowerSan = sanitizeDotsLower(segLower.c_str());
+		Utils::String segLower = toLowerCopy(firstPathSegment(rel).c_str());
+		Utils::String segLowerSan = sanitizeDotsLower(segLower.c_str());
 		for (size_t idx = 0; idx < nestedNamesLower.size(); ++idx)
 		{
-			if (nestedNamesLower[idx] == segLower || nestedNamesLowerSanitized[idx] == segLower || nestedNamesLower[idx] == segLowerSan || nestedNamesLowerSanitized[idx] == segLowerSan)
+			const Utils::String& base = nestedNamesLower[idx];
+			const Utils::String& baseSan = nestedNamesLowerSanitized[idx];
+
+			if (base == segLower || base == segLowerSan || baseSan == segLower || baseSan == segLowerSan)
+				return true;
+
+			Utils::String baseDat = base + "_dat";
+			Utils::String baseSanDat = baseSan + "_dat";
+			if (baseDat == segLower || baseDat == segLowerSan || baseSanDat == segLower || baseSanDat == segLowerSan)
 				return true;
 		}
 		return false;
 	};
 
-	auto queueDirectoryFiles = [&](FileSystem::Directory* directory, const Utils::String& relativePath, const auto& self) -> void
+	auto getDirLeafName = [](const FileSystem::Directory* dir) -> Utils::String
+	{
+		const char* slash = dir->m_path.strrchr('\\');
+		if (!slash) slash = dir->m_path.strrchr('/');
+		return slash ? Utils::String(slash + 1) : dir->m_path;
+	};
+
+	auto hasMatchingNestedDirectory = [&](FileSystem::Directory* dir, const Utils::String& topSeg) -> bool
+	{
+		Utils::String targetLower = toLowerCopy(topSeg.c_str());
+		Utils::String targetLowerSan = sanitizeDotsLower(topSeg.c_str());
+		for (auto* sub : dir->m_subdirs)
+		{
+			Utils::String leaf = getDirLeafName(sub);
+			Utils::String leafLower = toLowerCopy(leaf.c_str());
+			Utils::String leafLowerSan = sanitizeDotsLower(leaf.c_str());
+			if (leafLower == targetLower || leafLower == targetLowerSan || leafLowerSan == targetLower || leafLowerSan == targetLowerSan)
+				return true;
+		}
+		return false;
+	};
+
+	auto queueDirectoryFiles = [&](FileSystem::Directory* directory, FileSystem::Directory* rootDir, const Utils::String& relativePath, const auto& self) -> void
 	{
 		if (!directory)
 			return;
@@ -457,9 +484,9 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 		for (auto& file : directory->m_files)
 		{
 			Utils::String archiveName = relativePath.empty() ? file.getName() : relativePath / file.getName();
+			Utils::String topSeg = firstPathSegment(archiveName);
 
-			// Skip if destined to nested archive; recursion will handle it.
-			if (isNestedTopSegment(archiveName))
+			if (isNestedTopSegment(archiveName) && hasMatchingNestedDirectory(rootDir, topSeg))
 			{
 				LOGINFO("[DAT_TOOLS] Skipped nested-level file: %s", file.m_path.c_str());
 				continue;
@@ -477,7 +504,7 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 				operator delete(filedata, &ModloaderHeap);
 				continue;
 			}
-			replacer.m_files.push_back(DataArchiveTools::FileStructure(filedata, file.m_filesize, (size_t)-1, archiveName.c_str(), true));
+			replacer.m_files.emplace_back(filedata, file.m_filesize, (size_t)-1, archiveName.c_str(), true);
 			LOGINFO("[DAT_TOOLS] Queued file for replacement: %s", file.m_path.c_str());
 		}
 
@@ -487,45 +514,63 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 			if (!slash) slash = subdir->m_path.strrchr('/');
 			Utils::String subdirName = slash ? Utils::String(slash + 1) : subdir->m_path;
 
-			if (isNestedTopSegment(subdirName))
+			if (isNestedTopSegment(subdirName) && hasMatchingNestedDirectory(rootDir, firstPathSegment(subdirName)))
 			{
 				LOGINFO("[DAT_TOOLS] Skipped nested-level directory: %s", subdir->m_path.c_str());
 				continue;
 			}
 
 			Utils::String nextRelative = relativePath.empty() ? subdirName : relativePath / subdirName;
-			self(subdir, nextRelative, self);
+			self(subdir, rootDir, nextRelative, self);
 		}
 	};
 
-	// Try sanitized path first, fall back to raw filename for backward compatibility
-	Utils::String lookupPath = sanitizeDots(filename);
+	std::vector<Utils::String> lookupCandidates;
+	Utils::String lookupBase = sanitizeDots(filename);
+	lookupCandidates.push_back(lookupBase);
+	lookupCandidates.push_back(lookupBase + "_dat");
+	lookupCandidates.push_back(filename);
+	lookupCandidates.push_back(filename + "_dat");
+
+	std::unordered_set<std::string> processedPaths;
+	processedPaths.reserve(ModLoader::Profiles.getSize());
+
+	auto alreadyProcessed = [&](FileSystem::Directory* dir) -> bool
+	{
+		Utils::String lower = toLowerCopy(dir->m_path.c_str());
+		std::string key(lower.c_str());
+		auto [it, inserted] = processedPaths.insert(key);
+		return !inserted;
+	};
+
 	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 	{
 		if (!prof->m_bEnabled)
 			continue;
 
-		FileSystem::Directory* dir = prof->FindDirectory(lookupPath.c_str());
-		if (!dir)
-			dir = prof->FindDirectory(filename.c_str()); // fallback
+		for (const auto& candidate : lookupCandidates)
+		{
+			FileSystem::Directory* dir = prof->FindDirectory(candidate.c_str());
+			if (!dir)
+				continue;
 
-		if (!dir) // Didn't find anything in this profile
-			continue;
+			if (alreadyProcessed(dir))
+				continue;
 
-		if (dir)
-			queueDirectoryFiles(dir, Utils::String(), queueDirectoryFiles);
+			queueDirectoryFiles(dir, dir, Utils::String(), queueDirectoryFiles);
+		}
 	}
 
-	// Track if we already have a direct replacement for an inner name
+	std::unordered_set<std::string> replacementNamesLower;
+	replacementNamesLower.reserve(replacer.m_files.size());
+	for (const auto& f : replacer.m_files)
+		replacementNamesLower.insert(std::string(toLowerCopy(f.m_filename.c_str()).c_str()));
+
 	auto hasDirectReplacement = [&](const char* innerName) -> bool
 	{
-		for (const auto& f : replacer.m_files)
-			if (stricmp(f.m_filename.c_str(), innerName) == 0)
-				return true;
-		return false;
+		return replacementNamesLower.find(std::string(toLowerCopy(innerName).c_str())) != replacementNamesLower.end();
 	};
 
-	// Recursive processing of nested archives
 	for (size_t i = 0; i < holder->getFileAmount(); ++i)
 	{
 		const char* innerName = holder->getFileIndexFileName(i);
@@ -552,7 +597,7 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 			}
 			memcpy(copyBuf, (void*)nestedHolder.m_data, nestedNewSize);
 			Hw::cHeap::free(nestedHolder.m_data);
-			replacer.m_files.push_back(DataArchiveTools::FileStructure(copyBuf, nestedNewSize, (size_t)-1, innerName, true));
+			replacer.m_files.emplace_back(copyBuf, nestedNewSize, (size_t)-1, innerName, true);
 			LOGINFO("[DAT_TOOLS] Recursively queued rebuilt nested archive: %s", nestedPath.c_str());
 		}
 	}
@@ -560,7 +605,6 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 	if (replacer.m_files.empty())
 		return (size_t)-1;
 
-	// Build sanitized output path: ModLoaderPath/repacked/<sanitized filename>/fmerge.dat
 	Utils::String path = Utils::String(ModLoader::ModLoaderPath) / "repacked";
 	Utils::String subDir = filename;
 	const char* begin = subDir.begin();
@@ -580,7 +624,7 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 			slash = end;
 
 		Utils::String dirPart = Utils::String(begin, (size_t)(slash - begin));
-		dirPart = sanitizeDots(dirPart); // enforce '.' -> '_' for path segments
+		dirPart = sanitizeDots(dirPart);
 
 		if (!dirPart.empty())
 		{
@@ -608,4 +652,4 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 	return (size_t)-1;
 }
 
-#endif 
+#endif

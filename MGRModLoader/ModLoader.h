@@ -226,6 +226,13 @@ namespace FileSystem
 
 	bool WaitForRead(eReadId reader);
 	bool IsReadComplete(eReadId reader);
+	void AddRef(eReadId reader);
+	void AddUse(eReadId reader);
+	void ReleaseUse(eReadId reader);
+	void Release(eReadId reader);
+
+	bool HasActiveReader(const char* path);
+	eReadId GetActiveReader(const char* path);
 
 	void RemoveDirectoryRecursively(const char* path);
 }

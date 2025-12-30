@@ -13,13 +13,18 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait
 	if (pThis->m_Flag & 0x1000)
 		return original(pThis);
 
-	static std::unordered_map<FileRead::cWork*, FileSystem::eReadId> reqList;
+	static std::map<FileRead::cWork*, FileSystem::eReadId> reqList;
 
-	if (pThis->m_Flag & 0x800)
+	if (reqList[pThis] || pThis->m_Flag & 0x800)
 	{
 		if (FileSystem::IsReadComplete(reqList[pThis]))
 		{
-			FileSystem::CancelRead(reqList[pThis]); // Release reader
+			// LOG("[FILEREAD] Finished here reading %s", pThis->m_Path.c_str());
+			FileSystem::Release(reqList[pThis]); // Release reader
+			
+			if (FileSystem::IsReaderAlive(reqList[pThis]))
+				LOGWARNING("[FILEREAD] Reader is still alive after release for %s", pThis->m_Path.c_str());
+			
 			reqList.erase(pThis);
 			pThis->registResource();
 			pThis->m_WaitCount = 0;
@@ -32,6 +37,9 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait
 			if (!FileSystem::IsReaderAlive(reqList[pThis]) || FileSystem::IsReadCanceled(reqList[pThis]))
 			{
 				Hw::cHeap::free(pThis->m_pFileData);
+				pThis->m_pFileData = nullptr;
+				FileSystem::CancelRead(reqList[pThis]); // Release reader
+				reqList.erase(pThis);
 
 				pThis->m_MoveRno = pThis->MOVE_ALLOC;
 				pThis->m_Flag |= 0x1000; // Flag it as untouchable by mods
@@ -50,43 +58,40 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait
 			Utils::formatPath(pThis->m_Path.m_pStr);
 			if (FileSystem::File* file = prof->FindFile(pThis->m_Path.m_pStr); file)
 			{
-				if (!reqList.contains(pThis))
+				LOGINFO("[FILEREAD] Found %s[%s] in %s", pThis->m_Path.c_str(), Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
+				// Hw::cHeap::free(pThis->m_pFileData);
+
+				void* pData = pThis->m_pFileData;
+				if (!pData)
 				{
-					LOGINFO("[FILEREAD] Found %s[%s] in %s", pThis->m_Path.c_str(), Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
-					Hw::cHeap::free(pThis->m_pFileData);
+					LOGERROR("[FILEREAD] Could not allocate space for our modded file.[Old: %p, New: %p, Available: %p]", pThis->m_NeedSize, file->m_filesize, ModloaderHeap.getAllocatableSize());
+					pThis->m_Flag |= 0x1000; // cannot alloc with our own heap
+					pThis->m_pFileData = pThis->m_pHeap->alloc(pThis->m_NeedSize, 0x1000, pThis->m_Flag & pThis->FLAG_ALLOC_BACK ? Hw::HW_ALLOC_PHYSICAL_BACK : Hw::HW_ALLOC_PHYSICAL, 0);
 
-					void* pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, pThis->m_Flag & pThis->FLAG_ALLOC_BACK ? Hw::HW_ALLOC_PHYSICAL_BACK : Hw::HW_ALLOC_PHYSICAL, 0);
-					if (!pData)
-					{
-						LOGERROR("[FILEREAD] Could not allocate space for our modded file.[Old: %p, New: %p, Available: %p]", pThis->m_NeedSize, file->m_filesize, ModloaderHeap.getAllocatableSize());
-						pThis->m_Flag |= 0x1000; // cannot alloc with our own heap
-						pThis->m_pFileData = pThis->m_pHeap->alloc(pThis->m_NeedSize, 0x1000, pThis->m_Flag & pThis->FLAG_ALLOC_BACK ? Hw::HW_ALLOC_PHYSICAL_BACK : Hw::HW_ALLOC_PHYSICAL, 0);
-						return original(pThis);
-					}
-
-					pThis->m_pFileData = pData;
-					pThis->m_NeedSize = file->m_filesize;
-
-					pThis->m_Flag |= 0x800;
-
-					FileSystem::eReadId reader = FileSystem::ReadAsync(file->m_path.c_str(), pData, file->m_filesize);
-					if (reader == FileSystem::READID_INVALID)
-					{
-						LOGERROR("[FILEREAD] Invalid reader for reading. Aborting...");
-						pThis->m_Flag |= 0x1000;
-						pThis->m_MoveRno = pThis->MOVE_ALLOC;
-						if (pThis->m_pFileData)
-						{
-							Hw::cHeap::free(pThis->m_pFileData);
-							pThis->m_pFileData = nullptr;
-						}
-						return 1;
-					}
-					Hw::DvdReadManager::Cancel(pThis->m_DvdId);
-					reqList.insert({ pThis, reader });
-					
-					return 0; // Let other works to request
+					return original(pThis);
 				}
+
+				pThis->m_pFileData = pData;
+				pThis->m_NeedSize = file->m_filesize;
+
+				FileSystem::eReadId reader = FileSystem::ReadAsync(file->m_path.c_str(), pData, file->m_filesize);
+				if (reader == FileSystem::READID_INVALID)
+				{
+					LOGERROR("[FILEREAD] Invalid reader for reading. Aborting...");
+					pThis->m_Flag |= 0x1000;
+					pThis->m_MoveRno = pThis->MOVE_ALLOC;
+					if (pThis->m_pFileData)
+					{
+						Hw::cHeap::free(pThis->m_pFileData);
+						pThis->m_pFileData = nullptr;
+					}
+					return 1;
+				}
+				pThis->m_Flag |= 0x800;
+				Hw::DvdReadManager::Cancel(pThis->m_DvdId);
+				reqList[pThis] = reader;
+
+				return 0; // Let other works to request
 			}
 		}
 	}
@@ -124,7 +129,7 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 
 	Utils::formatPath(filepath);
 
-	if (*loaderStatus == 1 && stricmp(&filepath[strlen(filepath) - 4], ".wem") != 0) // wem exclusion
+	if (*loaderStatus == 1 && stricmp(&filepath[strlen(filepath) - 4], ".usm") == 0)
 	{
 		if (true)
 		{
@@ -137,6 +142,9 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 
 				if (!file)
 					continue; // We haven't found any file? Skip to the next profile
+
+				if (stricmp(filepath, file->m_path.c_str()) == 0)
+					return original(loader);
 
 				LOGINFO("[CRIWARE] Found %s[%s] in %s", filepath, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
 				strcpy_s(filepath, MAX_PATH, file->m_path.c_str());
@@ -160,27 +168,47 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 
 		if (FileSystem::File* file = prof->FindFile(pFilePath); file)
 		{
+			void* pData = pReadAddr;
+			FileSystem::eReadId id = FileSystem::READID_INVALID;
+			if (FileSystem::eReadId readId = FileSystem::GetActiveReader(file->m_path.c_str()); readId != FileSystem::READID_INVALID)
+			{
+				LOGWARNING("[DVDREAD] It reached here, so we should forcefully wait for the active reader to complete first...(%s)", file->m_path.c_str());
+				id = readId;
+				FileSystem::WaitForRead(readId);
+				if (FileSystem::IsReadComplete(readId))
+				{
+					pThis->m_pReadAddr = pData;
+					pThis->m_Size = file->m_filesize;
+
+					buffSize = file->m_filesize;
+
+					Hw::DvdEnv::DebugUnregistReader(pThis);
+					Hw::DvdEnv::DebugEndCurrentReader(pThis);
+
+					return 1;
+				}
+				goto READER_CHECK_LABEL;
+			}
 			LOGINFO("[DVDREAD] Found %s[%s] in %s", pFilePath, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
-			void* pData = nullptr;
-			pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, Hw::HW_ALLOC_PHYSICAL, 0);
+			// pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, Hw::HW_ALLOC_PHYSICAL, 0); // commented out since we already have allocated space with desired size
 			if (!pData)
 			{
 				LOGERROR("[DVDREAD] Could not allocate space for our modded file.[Old: %p, New: %p, Available: %p]", buffSize, file->m_filesize, ModloaderHeap.getAllocatableSize());
 				return original(pThis, pFilePath, pReadAddr, buffSize, prio);
 			}
-			FileSystem::eReadId id = FileSystem::ReadAsync(file->m_path.c_str(), pData, file->m_filesize);
+			id = FileSystem::ReadAsync(file->m_path.c_str(), pData, file->m_filesize);
 			if (FileSystem::WaitForRead(id))
 			{
+				READER_CHECK_LABEL:
 				if (FileSystem::IsReadComplete(id))
 				{
-					Hw::cHeap::free(pReadAddr);
+					// Hw::cHeap::free(pReadAddr);
 					pThis->m_pReadAddr = pData;
 					pThis->m_Size = file->m_filesize;
 
 					buffSize = file->m_filesize;
-					pReadAddr = pData;
 
-					FileSystem::CancelRead(id); // Release reader
+					FileSystem::Release(id); // Release reader
 
 					Hw::DvdEnv::DebugUnregistReader(pThis);
 					Hw::DvdEnv::DebugEndCurrentReader(pThis);
