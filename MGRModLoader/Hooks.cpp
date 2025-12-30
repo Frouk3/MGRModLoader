@@ -3,6 +3,7 @@
 #include <FileRead.h>
 #include <map>
 #include <injector/injector.hpp>
+#include "FilesTools.hpp"
 
 CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait, FileRead::cWork*)
 {
@@ -51,7 +52,7 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait
 			{
 				if (!reqList.contains(pThis))
 				{
-					LOGINFO("[FILEREAD] Found %s[%s] from %s", pThis->m_Path.c_str(), Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
+					LOGINFO("[FILEREAD] Found %s[%s] in %s", pThis->m_Path.c_str(), Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
 					Hw::cHeap::free(pThis->m_pFileData);
 
 					void* pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, pThis->m_Flag & pThis->FLAG_ALLOC_BACK ? Hw::HW_ALLOC_PHYSICAL_BACK : Hw::HW_ALLOC_PHYSICAL, 0);
@@ -123,7 +124,7 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 
 	Utils::formatPath(filepath);
 
-	if (*loaderStatus == 1)
+	if (*loaderStatus == 1 && stricmp(&filepath[strlen(filepath) - 4], ".wem") != 0) // wem exclusion
 	{
 		if (true)
 		{
@@ -137,12 +138,9 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 				if (!file)
 					continue; // We haven't found any file? Skip to the next profile
 
-				if (strcmp(filepath, file->m_path.c_str())) // Replace once and do not spam into the log
-				{
-					LOGINFO("[CRIWARE] Replacing %s -> %s...", filepath, file->m_path.c_str());
-					strcpy_s(filepath, MAX_PATH, file->m_path.c_str());
-					break;
-				}
+				LOGINFO("[CRIWARE] Found %s[%s] in %s", filepath, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
+				strcpy_s(filepath, MAX_PATH, file->m_path.c_str());
+				break;
 			}
 		}
 	}
@@ -163,7 +161,8 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 		if (FileSystem::File* file = prof->FindFile(pFilePath); file)
 		{
 			LOGINFO("[DVDREAD] Found %s[%s] in %s", pFilePath, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
-			void* pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, Hw::HW_ALLOC_PHYSICAL, 0);
+			void* pData = nullptr;
+			pData = ModloaderHeap.alloc(file->m_filesize, 0x1000, Hw::HW_ALLOC_PHYSICAL, 0);
 			if (!pData)
 			{
 				LOGERROR("[DVDREAD] Could not allocate space for our modded file.[Old: %p, New: %p, Available: %p]", buffSize, file->m_filesize, ModloaderHeap.getAllocatableSize());
@@ -182,6 +181,9 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 					pReadAddr = pData;
 
 					FileSystem::CancelRead(id); // Release reader
+
+					Hw::DvdEnv::DebugUnregistReader(pThis);
+					Hw::DvdEnv::DebugEndCurrentReader(pThis);
 
 					return 1;
 				}
@@ -204,6 +206,145 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 	}
 
 	return original(pThis, pFilePath, pReadAddr, buffSize, prio);
+}
+
+CREATE_THISCALL(false, shared::base + 0x9F1320, int, PgIoHookDeferredCRI_LoadSnd, char*, char* pData, char* pEnvData, char* pLoaderData)
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
+		return original(pThis, pData, pEnvData, pLoaderData);
+
+	char* wemName = *(char**)(pData + 0x10);
+
+	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
+	{
+		if (!prof->m_bEnabled)
+			continue;
+
+		if (FileSystem::File* file = prof->FindFile(wemName); file)
+		{
+			LOGINFO("[LOADSND] Found %s[%s] in %s", wemName, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
+			strcpy_s(wemName, MAX_PATH, file->m_path.c_str());
+
+			return original(pThis, pData, pEnvData, pLoaderData);
+		}
+	}
+	return original(pThis, pData, pEnvData, pLoaderData);
+}
+
+CREATE_THISCALL(false, shared::base + 0xA9CBC0, void, FileRead_cWork_registerResource, FileRead::cWork*)
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadMods || !ModLoader::bLoadFiles)
+		return original(pThis); // jump into original
+
+	if (!strcmp((char*)pThis->m_pFileData, "DAT\0"))
+	{
+		Hw::cFmerge backupDat = Hw::cFmerge((char*)pThis->m_pFileData);
+
+		Hw::cFmerge passDat = backupDat;
+
+		Utils::String filename = Utils::formatPath(pThis->m_Path.c_str());
+
+		if (char* dot = filename.strrchr('.'))
+			*dot = '_'; // change extension to prevent issues
+
+		size_t size = ReplaceDataArchiveFile(&passDat, pThis->m_NeedSize, filename, pThis->m_Flag & pThis->FLAG_ALLOC_BACK ? Hw::HW_ALLOC_PHYSICAL_BACK : Hw::HW_ALLOC_PHYSICAL);
+		// if (size == -1) LOGERROR("[FILEREAD] Could not replace file %s in data archive!", pThis->m_Path.c_str());
+		if (size != 0 && size != -1)
+		{
+			LOGINFO("[FILEREAD] Replaced file %s in data archive with size %s", pThis->m_Path.c_str(), Utils::getProperSize(size).c_str());
+
+			pThis->m_pFileData = passDat.getData();
+			pThis->m_NeedSize = (unsigned int)size;
+		}
+	}
+
+	return original(pThis);
+}
+
+CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::cDvdReader*)
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
+		return original(pThis);
+
+	if (pThis->m_State == Hw::cDvdReader::STATE_COMPLETE)
+	{
+		if (pThis->m_pReadAddr && !strcmp((char*)pThis->m_pReadAddr, "DAT\0"))
+		{
+			Hw::cFmerge holder;
+			holder.m_data = (Hw::FmergeHeader*)pThis->m_pReadAddr;
+
+			Utils::String filepath = Utils::formatPath(pThis->m_pFilePath);
+			if (char* dot = filepath.strrchr('.'))
+				*dot = '_'; // change extension to prevent issues
+
+			size_t newSize = ReplaceDataArchiveFile(&holder, pThis->m_Size, filepath, Hw::HW_ALLOC_PHYSICAL_BACK);
+			if (newSize != 0 && newSize != -1)
+			{
+				LOGINFO("[DVDREAD] Replaced file %s in data archive with size %s", pThis->m_pFilePath, Utils::getProperSize(newSize).c_str());
+				pThis->m_Size = (unsigned int)newSize;
+				pThis->m_pReadAddr = holder.m_data;
+			}
+		}
+		return;
+	}
+	return original(pThis);
+}
+
+CREATE_HOOK(false, shared::base + 0x5825B0, int, __cdecl, BindCpk)
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
+		return original();
+
+	if (!CriWare::iAvailableCPKs)
+		return original();
+
+	if (CriWare::iAvailableCPKs)
+	{
+		for (int i = 0; i < CriWare::aBinders.getSize(); i++)
+			CriWare::freeBinderWork(CriWare::aBinders[i]);
+
+		CriWare::aBinders.clear();
+	}
+
+	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
+	{
+		if (!prof->m_bEnabled)
+			continue;
+
+		prof->FileWalk([&](FileSystem::File& file) -> void
+			{
+				if (const char* ext = strrchr(file.getName(), '.'); ext && !strcmp(ext, ".cpk"))
+				{
+					Hw::cDvdCriFsBinder* pWork = CriWare::getFreeBinderWork();
+
+					if (!pWork->bindCpkFileAsync(file.m_path.c_str(), 0x10000))
+					{
+						LOGERROR("[CRIWARE] Failed to sync %s archive.", file.m_path.c_str());
+						return;
+					}
+
+					while (pWork->m_BindStatus == CRIFSBINDER_STATUS_ANALYZE)
+					{
+						if (criFsBinder_GetStatus(pWork->m_BinderId, &pWork->m_BindStatus) || pWork->m_BindStatus != CRIFSBINDER_STATUS_ANALYZE && pWork->m_BindStatus != CRIFSBINDER_STATUS_COMPLETE)
+						{
+							CriWare::freeBinderWork(pWork);
+							break;
+						}
+					}
+
+					if (pWork->m_BindStatus != CRIFSBINDER_STATUS_COMPLETE)
+					{
+						LOGERROR("[CRIWARE] Failed to bind %s archive.", file.m_path.c_str());
+						return;
+					}
+
+					LOGINFO("[CRIWARE] Bound %s archive successfully.", file.m_path.c_str());
+					pWork->m_Type = Hw::cDvdCriFsBinder::TYPE_FILE;
+				}
+			});
+	}
+
+	return original();
 }
 
 DWORD fixDvdReadRequestExit = shared::base + 0x9EC18F + 8;

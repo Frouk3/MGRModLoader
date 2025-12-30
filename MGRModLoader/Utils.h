@@ -112,6 +112,9 @@ namespace Utils
             return *this;
         }
 
+		char* begin() { return m_string; }
+		char* end() { return m_string + m_length; }
+
         void append(const char* str)
         {
             if (!str) 
@@ -371,6 +374,17 @@ namespace Utils
             memmove(m_string + pos, m_string + pos + len, m_length - (pos + len) + 1);
             m_length -= len;
 		}
+
+        // Returns -1 if not found
+        size_t find(const char* substr, size_t startPos = 0) const
+        {
+            if (!substr || startPos >= m_length) return -1;
+            const char* found = strstr(m_string + startPos, substr);
+            if (found)
+                return found - m_string;
+
+            return -1;
+        }
     };
 
 	inline char* formatPath(char* buffer)

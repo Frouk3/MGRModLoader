@@ -169,6 +169,7 @@
     <ClInclude Include="imgui\imstb_truetype.h" />
     <ClInclude Include="json.hpp" />
     <ClInclude Include="ModLoader.h" />
+    <ClInclude Include="ThreadWork.hpp" />
     <ClInclude Include="Timer.hpp" />
     <ClInclude Include="Utils.h" />
   </ItemGroup>

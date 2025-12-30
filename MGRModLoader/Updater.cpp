@@ -1,6 +1,7 @@
 #include "ModLoader.h"
 #include <urlmon.h>
 #pragma comment(lib, "urlmon.lib")
+#include "ThreadWork.hpp"
 
 void Updater::Init()
 {
@@ -33,7 +34,7 @@ bool CheckUpd()
 			if (fLatestVersion > fCurrentVersion)
 			{
 				eUpdateStatus = UPDATE_STATUS_AVAILABLE;
-				LOGINFO("New version available!: %.2f (You have %.2f)", fLatestVersion, fCurrentVersion);
+				LOGINFO("New version available!: %s (You have %s)", Utils::FloatStringNoTralingZeros(fLatestVersion).c_str(), Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
 				result = true;
 			}
 			else if (fLatestVersion == -1.0)
@@ -45,7 +46,7 @@ bool CheckUpd()
 			else
 			{
 				eUpdateStatus = UPDATE_STATUS_LATEST_INSTALLED;
-				LOGINFO("You have the latest version installed: %.2f", fCurrentVersion);
+				LOGINFO("You have the latest version installed: %s", Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
 				result = false;
 			}
 		}
@@ -78,12 +79,10 @@ bool CheckUpd()
 
 bool Updater::CheckAsync()
 {
-	hUpdateThread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD
+	ThreadWork::AddThread(new cThread([](cThread* pThread, LPVOID pParam)
 		{
 			CheckUpd();
-
-			return 0;
-		}, nullptr, 0, nullptr);
+		}, nullptr));
 
 	return true;
 }

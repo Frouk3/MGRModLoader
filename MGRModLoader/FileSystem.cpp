@@ -458,7 +458,8 @@ bool FileSystem::PathExists(const char* path)
 
 void __cdecl fs_criErr_cb(const char* errid, unsigned int p1, unsigned int p2, unsigned int* pArray)
 {
-	LOGERROR("[CRIWARE] %s", errid);
+	Utils::String err = Utils::format(errid, p1, p2);
+	LOGERROR("[CRIWARE] %s", err.c_str());
 }
 
 bool FileSystem::Init(unsigned int maxReaders)
@@ -854,7 +855,23 @@ FileSystem::Directory* FileSystem::Directory::FindSubDir(const Utils::String& pa
 
 	const char* dirname = dirPath.c_str();
 
-	if (const char* chr = dirPath.strrchr('\\'); chr)
+	if (FileSystem::PathExists((m_path / dirname).c_str()))
+	{
+		std::vector<std::string> pathParts;
+		size_t start = 0;
+		size_t end = 0;
+		while ((end = dirPath.find("\\", start)) != -1)
+		{
+			if (end != start)
+				pathParts.push_back(dirPath.substr(start, end - start).c_str());
+			start = end + 1;
+		}
+		if (start < dirPath.size())
+			pathParts.push_back(dirPath.substr(start).c_str());
+		return FindSubDirRecursive(pathParts, 0);
+	}
+	
+	if (const char *chr = dirPath.strrchr('\\'); chr)
 		dirname = chr + 1;
 
 	if (!dirname || dirname[0] == '\0')

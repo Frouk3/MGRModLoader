@@ -3,6 +3,9 @@
 #include "imgui/imgui.h"
 #include "ModLoader.h"
 #include <GameMenuStatus.h>
+#include "FilesTools.hpp"
+#include <Hooks.h>
+#include "ThreadWork.hpp"
 
 Hw::cKeyboardState g_KeyboardState;
 
@@ -10,117 +13,29 @@ bool bKeyboardInputAvailable = true;
 
 char g_KeyHoldState[Hw::KeyboardManager::MAX_KEY_MAP_FLAG] = { 0 };
 
-class ModLoaderPlugin
+typedef HRESULT(WINAPI* GetDeviceState_t)(LPDIRECTINPUTDEVICE8W, DWORD, LPVOID);
+static GetDeviceState_t oGetDeviceState = nullptr;
+
+HRESULT WINAPI hkGetDeviceState(LPDIRECTINPUTDEVICE8W pThis, DWORD lpdwData, LPVOID pBuffer)
 {
-public:
-	static inline void InitGUI()
+	if (!ModLoader::bInit)
+		return oGetDeviceState(pThis, lpdwData, pBuffer);
+
+	if (gui::GUIHotkey.m_bToggle)
 	{
-		Events::OnPresent.before += gui::OnEndScene;
-		Events::OnDeviceReset.before += gui::OnReset::Before;
-		Events::OnDeviceReset.after += gui::OnReset::After;
+		if (pBuffer == &g_KeyHoldState)
+			return oGetDeviceState(pThis, lpdwData, pBuffer);
+
+		if (pThis == Hw::KeyboardManager::m_pKeyboardDevice)
+			return 0x8007001E;
+
+		if (pThis == Hw::MouseManager::m_pMouseDevice)
+			return 0x8007001E;
 	}
 
-	ModLoaderPlugin()
-	{
-		InitGUI();
+	return oGetDeviceState(pThis, lpdwData, pBuffer);
+}
 
-		Logger::Init();
-
-		LOG("Running on Mod Loader v%s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion));
-
-		ModloaderHeap.create(-1, "ModloaderHeap");
-		FileSystem::Init(64);
-
-		ModLoader::Startup();
-		Updater::Init();
-
-		gui::GUIHotkey.Load();
-
-		Events::OnGameStartupEvent.after += [](cGame *)
-			{
-				Hw::KeyboardManager::InitState(g_KeyboardState);
-			};
-
-		Events::OnUpdateEvent += []()
-			{
-				if (bKeyboardInputAvailable && *(int*)(shared::base + 0x19D509C))
-				{
-					bool bUpdateStrokes = true;
-					if (Hw::KeyboardManager::m_pKeyboardDevice)
-					{
-						HRESULT hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
-						if (hr == DIERR_INPUTLOST)
-						{
-							hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
-						}
-						if (hr == DIERR_NOTACQUIRED)
-						{
-							bUpdateStrokes = false;
-						}
-
-						if (SUCCEEDED(hr))
-						{
-							hr = Hw::KeyboardManager::m_pKeyboardDevice->GetDeviceState(Hw::KeyboardManager::MAX_KEY_MAP_FLAG, (LPVOID)&g_KeyHoldState);
-							if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED)
-								bUpdateStrokes = false;
-						}
-						else bUpdateStrokes = false;
-					}
-					else bUpdateStrokes = false;
-					if (bUpdateStrokes)
-					{
-						Hw::KeyboardManager::UpdateStateOnToOld(g_KeyboardState);
-						{
-							for (int i = 0; i < Hw::KEYBOARD_MAP::KB_MAP_MAX; ) // Oh right.
-							{
-								int hwKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 0];
-								int diKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 1];
-
-								if (g_KeyHoldState[diKey] & 0x80)
-									g_KeyboardState.m_pOn[hwKey >> 5] |= (0x80000000 >> (hwKey & 0x1F));
-								else
-									g_KeyboardState.m_pOn[hwKey >> 5] &= ~(0x80000000 >> (hwKey & 0x1F));
-
-								i++;
-							}
-
-							Hw::KeyboardManager::UpdateKeyState(g_KeyboardState);
-						}
-					}
-				}
-				else Hw::KeyboardManager::InitState(g_KeyboardState);
-
-				gui::GUIHotkey.Update();
-				FileSystem::UpdateReaders();
-			};
-
-		Events::OnMainCleanupEvent.before += []()
-			{
-				Updater::SaveConfig();
-				Logger::SaveConfig();
-				ModLoader::Shutdown();
-				gui::GUIHotkey.Save();
-				FileSystem::Shutdown();
-			};
-
-		Events::OnMainCleanupEvent.after += []()
-			{
-				// Make sure to free resources before heap destruction, if you'll have a leak here, that's your fault
-				for (void* pBlock = ModloaderHeap.getNextAlloc(nullptr), *pNext = nullptr; pBlock; pBlock = pNext)
-				{
-					LOGWARNING("Freeing resources at %p that was not freed before heap destruction, memory leak might occur", pBlock);
-					pNext = ModloaderHeap.getNextAlloc(pBlock);
-					Hw::cHeap::free(pBlock);
-				}
-				ModloaderHeap.destroy();
-
-				LOGINFO("Cleanup complete.");
-				Logger::Shutdown();
-			};
-	}
-} gModLoaderPlugin;
-
-// Explorer state
 bool Explorer_Enabled = false;
 FileSystem::Directory* Explorer_MainDirectory = nullptr;
 const char* Explorer_CustomFilter = "";
@@ -306,7 +221,7 @@ void DrawMiniExplorer()
 		for (size_t i = 0; i < allowedExtensions.size(); i++)
 		{
 			const bool bIsSelected = (allowedExtensions[i] == Explorer_Filter);
-			ImGui::PushID(static_cast<int>(i));
+			ImGui::PushID((int)i);
 
 			Utils::String filterPreview = "*";
 			if (allowedExtensions[i][0u] != '*')
@@ -375,7 +290,7 @@ void DrawMiniExplorer()
 		{
 			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false))
 			{
-				const bool multi = shared::IsKeyPressed(VK_LCONTROL, true);
+				const bool multi = g_KeyboardState.on(Hw::KB_CTRL_L);
 				if (!multi)
 				{
 					Explorer_selectedDirs.clear();
@@ -424,7 +339,7 @@ void DrawMiniExplorer()
 		{
 			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false))
 			{
-				const bool multi = shared::IsKeyPressed(VK_LCONTROL, true);
+				const bool multi = g_KeyboardState.on(Hw::KB_CTRL_L);
 				if (!multi)
 				{
 					Explorer_selectedDirs.clear();
@@ -444,6 +359,170 @@ void DrawMiniExplorer()
 
 	ImGui::End();
 }
+
+class ModLoaderPlugin
+{
+public:
+	static inline void InitGUI()
+	{
+		Events::OnPresent.before += gui::OnEndScene;
+		Events::OnDeviceReset.before += gui::OnReset::Before;
+		Events::OnDeviceReset.after += gui::OnReset::After;
+	}
+
+	ModLoaderPlugin()
+	{
+		InitGUI();
+
+		Logger::Init();
+
+		LOG("Running on Mod Loader v%s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion));
+
+		ModloaderHeap.create(-1, "ModloaderHeap");
+		FileSystem::Init(64);
+
+		ModLoader::Startup();
+		Updater::Init();
+
+		if (!FileSystem::PathExists((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str()))
+			CreateDirectoryA((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str(), nullptr);
+
+		for (ModLoader::ModProfile *&prof : ModLoader::Profiles)
+		{
+			prof->FileWalk([&](FileSystem::File &file)
+				{
+					if (const char* chr = strrchr(file.getName(), '.'); !stricmp(chr, ".cpk"))
+						++CriWare::iAvailableCPKs;
+				});
+		}
+
+		*(int*)(shared::base + 0x14CDE20) += CriWare::iAvailableCPKs;
+
+		gui::GUIHotkey.Load();
+
+		Events::OnGameStartupEvent.after += [](cGame *)
+			{
+				ThreadWork::AddThread(new cThread([](cThread* pThread, LPVOID pParam)
+					{
+						Sleep(1000);
+						void** vftable = *(void***)Hw::KeyboardManager::m_pKeyboardDevice;
+						oGetDeviceState = (GetDeviceState_t)vftable[9];
+						injector::WriteMemory<void*>((void**)&vftable[9], (void*)hkGetDeviceState, true);
+
+						LOG("Input hook installed.");
+					}, nullptr));
+
+				Hw::KeyboardManager::InitState(g_KeyboardState);
+
+				/*
+				FileSystem::Directory pTestDir((ModLoader::GetModFolder() / "test" / "pl1010" / "").c_str());
+				pTestDir.scanFiles(true, false, FileSystem::Directory::SCANFLAG_ALL);
+				std::vector<DataArchiveTools::FileStructure> outFiles;
+				for (auto &file : pTestDir.m_files)
+				{
+					DataArchiveTools::FileStructure fs;
+					fs.m_filename = file.getName();
+					fs.m_fileSize = file.m_filesize;
+					bool bRead = FileSystem::ReadSyncAlloc(file.m_path.c_str(), &fs.m_file, &fs.m_fileSize);
+					if (bRead)
+						outFiles.push_back(fs);
+					else
+						LOGERROR("Failed to read file %s for testing.", file.m_path.c_str());
+				}
+				if (!outFiles.empty())
+				{
+					if (DataArchiveTools::rebuildFmerge(outFiles, (ModLoader::GetModFolder() / "test" / "pl1010_rebuilt.dat").c_str()))
+						LOGERROR("Error occured.");
+					else
+						LOG("Rebuilt fmerge file successfully.");
+				}
+				*/
+			};
+
+		Events::OnUpdateEvent += []()
+			{
+				if (bKeyboardInputAvailable && *(int*)(shared::base + 0x19D509C))
+				{
+					bool bUpdateStrokes = true;
+					if (Hw::KeyboardManager::m_pKeyboardDevice)
+					{
+						HRESULT hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
+						if (hr == DIERR_INPUTLOST)
+						{
+							hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
+						}
+						if (hr == DIERR_NOTACQUIRED)
+						{
+							bUpdateStrokes = false;
+						}
+
+						if (SUCCEEDED(hr))
+						{
+							hr = Hw::KeyboardManager::m_pKeyboardDevice->GetDeviceState(Hw::KeyboardManager::MAX_KEY_MAP_FLAG, (LPVOID)&g_KeyHoldState);
+							if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED)
+								bUpdateStrokes = false;
+						}
+						else bUpdateStrokes = false;
+					}
+					else bUpdateStrokes = false;
+					if (bUpdateStrokes)
+					{
+						Hw::KeyboardManager::UpdateStateOnToOld(g_KeyboardState);
+						{
+							for (int i = 0; i < Hw::KEYBOARD_MAP::KB_MAP_MAX; ) // Oh right.
+							{
+								int hwKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 0];
+								int diKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 1];
+
+								if (g_KeyHoldState[diKey] & 0x80)
+									g_KeyboardState.m_pOn[hwKey >> 5] |= (0x80000000 >> (hwKey & 0x1F));
+								else
+									g_KeyboardState.m_pOn[hwKey >> 5] &= ~(0x80000000 >> (hwKey & 0x1F));
+
+								i++;
+							}
+
+							Hw::KeyboardManager::UpdateKeyState(g_KeyboardState);
+						}
+					}
+				}
+				else Hw::KeyboardManager::InitState(g_KeyboardState);
+
+				ThreadWork::UpdateThreads();
+				if (g_GameMenuStatus == InMenu) gui::GUIHotkey.Update();
+				else gui::GUIHotkey.m_bToggle = false; // force close GUI when not in menu, and make sure that input is available
+				FileSystem::UpdateReaders();
+			};
+
+		Events::OnMainCleanupEvent.before += []()
+			{
+				Explorer_MainDirectory = nullptr;
+				Explorer_selectedDirs.clear();
+				Explorer_selectedFiles.clear();
+
+				ThreadWork::ClearThreads();
+
+				Updater::SaveConfig();
+				Logger::SaveConfig();
+				ModLoader::Shutdown();
+				gui::GUIHotkey.Save();
+				FileSystem::Shutdown();
+			};
+
+		Events::OnMainCleanupEvent.after += []()
+			{
+				RemoveDirectoryA((Utils::String(ModLoader::ModLoaderPath) / "repacked" / "").c_str()); // double slash just to be sure
+				// Make sure to free resources before heap destruction, if you'll have a leak here, that's your fault
+				for (void* pBlock = ModloaderHeap.getNextAlloc(nullptr); pBlock; pBlock = ModloaderHeap.getNextAlloc(pBlock))
+					LOGWARNING("This allocation at %p is a memory leak", pBlock);
+
+				ModloaderHeap.destroy(); // Destroying heap would also free all allocations, but we want to log leaks
+
+				LOGINFO("Cleanup complete.");
+				Logger::Shutdown();
+			};
+	}
+} gModLoaderPlugin;
 
 void gui::RenderWindow()
 {
@@ -489,6 +568,7 @@ void gui::RenderWindow()
 					ImGui::PushItemWidth(ImGui::GetWindowContentRegionMax().x - 100.f);
 					ImGui::InputText("##search", searchBarContent);
 					ImGui::SetItemDefaultFocus();
+					ImGui::PopItemWidth();
 
 					ImGui::SameLine();
 					if (ImGui::Button("Clear", ImVec2(ImGui::GetContentRegionAvail().x - 5.f, 0)))
@@ -496,7 +576,6 @@ void gui::RenderWindow()
 						searchBarContent.clear();
 						searchBarContent.shrink_to_fit();
 					}
-					ImGui::PopItemWidth();
 
 					ImGui::PopStyleVar(2);
 					ImGui::PopStyleColor(2);
@@ -846,12 +925,10 @@ void gui::RenderWindow()
 						if (ImGui::IsItemClicked())
 						{
 							if (prof->m_ModInfo)
-								CreateThread(nullptr, 0, [](LPVOID lpProf) -> DWORD
+								ThreadWork::AddThread(new cThread([](cThread*, LPVOID pParam)
 									{
-										ShellExecuteA(nullptr, "open", ((ModLoader::ModProfile*)lpProf)->m_ModInfo->m_authorURL.c_str(), nullptr, nullptr, 0);
-
-										return 0;
-									}, (LPVOID)prof, 0, nullptr);
+										ShellExecuteA(0, "open", ((ModLoader::ModProfile*)pParam)->m_ModInfo->m_authorURL.c_str(), NULL, NULL, 0);
+									}, prof));
 						}
 						ImGui::TableNextColumn();
 						if (prof->m_ModInfo)
@@ -889,6 +966,23 @@ void gui::RenderWindow()
 			ImGui::Checkbox("Load scripts", &ModLoader::bLoadScripts);
 			ImGui::Checkbox("Save RAM", &ModLoader::bSaveRAM);
 			HelpTip("If enabled, it will load the mod despite being disabled\nNo need to worry since these mods will not be picked for mod loading");
+			if (ImGui::Button("Save Config"))
+			{
+				Updater::SaveConfig();
+				Logger::SaveConfig();
+				ModLoader::Save();
+
+				gui::GUIHotkey.Save();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Load Config"))
+			{
+				Updater::LoadConfig();
+				Logger::LoadConfig();
+				ModLoader::Load();
+
+				gui::GUIHotkey.Load();
+			}
 			ImGui::SeparatorText("Log");
 			ImGui::Checkbox("Enable Logging", &Logger::bEnabled);
 			ImGui::Checkbox("Flush Log to File Immediately", &Logger::bFlushImmediately);
