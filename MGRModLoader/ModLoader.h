@@ -226,6 +226,8 @@ namespace FileSystem
 
 	bool WaitForRead(eReadId reader);
 	bool IsReadComplete(eReadId reader);
+
+	void RemoveDirectoryRecursively(const char* path);
 }
 
 namespace Logger

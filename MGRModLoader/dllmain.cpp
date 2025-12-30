@@ -511,7 +511,12 @@ public:
 
 		Events::OnMainCleanupEvent.after += []()
 			{
-				RemoveDirectoryA((Utils::String(ModLoader::ModLoaderPath) / "repacked" / "").c_str()); // double slash just to be sure
+				if (ModLoader::ModLoaderPath[0])
+				{
+					Utils::String repackedDir = Utils::String(ModLoader::ModLoaderPath) / "repacked" / "";
+					if (FileSystem::PathExists(repackedDir.c_str()))
+						FileSystem::RemoveDirectoryRecursively(repackedDir.c_str()); // scary but works
+				}
 				// Make sure to free resources before heap destruction, if you'll have a leak here, that's your fault
 				for (void* pBlock = ModloaderHeap.getNextAlloc(nullptr); pBlock; pBlock = ModloaderHeap.getNextAlloc(pBlock))
 					LOGWARNING("This allocation at %p is a memory leak", pBlock);

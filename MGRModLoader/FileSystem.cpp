@@ -673,6 +673,33 @@ bool FileSystem::IsReadComplete(eReadId reader)
 	return false;
 }
 
+void FileSystem::RemoveDirectoryRecursively(const char* path)
+{
+	Utils::String dirPath = Utils::formatPath(path);
+	Hw::cDvdFileFind fileFind;
+	if (!fileFind.startup((dirPath / "").c_str()))
+		return;
+	if (fileFind.isValid())
+	{
+		for (; fileFind.isValid(); fileFind.setNext())
+		{
+			if (fileFind.isSelf() || fileFind.isParent())
+				continue;
+			Utils::String fullPath = dirPath / fileFind.refName();
+			if (fileFind.isDirectory())
+			{
+				RemoveDirectoryRecursively(fullPath.c_str());
+				RemoveDirectoryA(fullPath.c_str());
+			}
+			else if (fileFind.isFile())
+			{
+				DeleteFileA(fullPath.c_str());
+			}
+		}
+	}
+	fileFind.cleanup();
+}
+
 bool FileSystem::File::read(void *filedata)
 {
 	if (!filedata)
