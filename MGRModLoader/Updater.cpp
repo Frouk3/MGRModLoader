@@ -1,91 +1,95 @@
 #include "ModLoader.h"
 #include <urlmon.h>
-
 #pragma comment(lib, "urlmon.lib")
+#include "ThreadWork.hpp"
 
 void Updater::Init()
 {
 	LoadConfig();
-
-	hUpdateThread = CreateThread(nullptr, 0, [](LPVOID lpParam) -> DWORD
-		{
-			Updater::CheckForUpdates();
-			return 0;
-		}, nullptr, 0, nullptr);
+	if (bEnabled)
+		CheckAsync();
 }
 
-bool Updater::CheckForUpdates()
+bool CheckUpd()
 {
-	if (!bEnabled)
-		return false;
+	using namespace Updater;
 
-	Utils::String savePath(MAX_PATH);
-	GetTempPathA(MAX_PATH, savePath.data());
+	bool result = false;
+	HRESULT hr;
+	const char* szURL = "https://github.com/Frouk3/ModMenuVersions/raw/refs/heads/main/MODLOADERVERSION.ini";
 
-	savePath.resize();
+	Utils::String tempPath(MAX_PATH);
+	GetTempPathA(MAX_PATH, tempPath.data());
+	tempPath.resize();
 
-	savePath /= "ModLoaderVersion.ini";
+	tempPath /= "MODLOADERVERSION.ini";
 
-	LOGINFO("Checking updates...");
-
-	HRESULT hr = URLDownloadToFileA(nullptr, "https://github.com/Frouk3/ModMenuVersions/raw/refs/heads/main/MODLOADERVERSION.ini", savePath.c_str(), 0, nullptr);
-
-	if (FAILED(hr))
+	hr = URLDownloadToFileA(nullptr, szURL, tempPath.c_str(), 0, nullptr);
+	if (hr == S_OK)
 	{
-		eUpdateStatus = UPDATE_STATUS_FAILED;
-		LOGERROR("Failed to check updates.");
-		return false;
-	}
-
-	if (SUCCEEDED(hr))
-	{
-		char versionBuffer[16] = { 0 };
-		GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", "-1.0", versionBuffer, sizeof(versionBuffer), savePath.c_str());
-		if (fLatestVersion = atof(versionBuffer); fLatestVersion != -1.0)
+		char verBuf[16] = { 0 };
+		if (GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", "-1.0", verBuf, sizeof(verBuf), tempPath.c_str()))
 		{
-			if (fCurrentVersion < fLatestVersion)
+			fLatestVersion = atof(verBuf);
+			if (fLatestVersion > fCurrentVersion)
 			{
 				eUpdateStatus = UPDATE_STATUS_AVAILABLE;
-				LOGINFO("Update is available: %s < %s", Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str(), Utils::FloatStringNoTralingZeros(fLatestVersion).c_str());
-
-				return true;
+				LOGINFO("New version available!: %s (You have %s)", Utils::FloatStringNoTralingZeros(fLatestVersion).c_str(), Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
+				result = true;
 			}
-			else if (fCurrentVersion == fLatestVersion)
+			else if (fLatestVersion == -1.0)
 			{
-				eUpdateStatus = UPDATE_STATUS_LATEST_INSTALLED;
-				LOGINFO("Version is up to date.");
-
-				return true;
+				eUpdateStatus = UPDATE_STATUS_FAILED;
+				LOGERROR("Failed to retrieve the latest version.");
+				result = false;
 			}
 			else
 			{
-				eUpdateStatus = UPDATE_STATUS_UNEXPECTED;
-				LOGINFO("You have a newer version than the latest available: %s > %s", Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str(), Utils::FloatStringNoTralingZeros(fLatestVersion).c_str());
-
-				return true;
+				eUpdateStatus = UPDATE_STATUS_LATEST_INSTALLED;
+				LOGINFO("You have the latest version installed: %s", Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
+				result = false;
 			}
 		}
 		else
 		{
 			eUpdateStatus = UPDATE_STATUS_FAILED;
-			LOGERROR("Failed to read version from file.");
-			return false;
+			LOGERROR("Failed to read the latest version from the update file.");
+			result = false;
 		}
 	}
+	else
+	{
+		if (hr == INET_E_DOWNLOAD_FAILURE)
+		{
+			eUpdateStatus = UPDATE_STATUS_NO_INTERNET;
+			LOGERROR("Unable to check for updates due to no internet connection?");
+		}
+		else
+		{
+			eUpdateStatus = UPDATE_STATUS_FAILED;
+			LOGERROR("Failed to download the update file. HRESULT: 0x%X", hr);
+		}
+		result = false;
+	}
 
-	eUpdateStatus = UPDATE_STATUS_UNEXPECTED;
-	return false;
-}
-
-bool Updater::CheckForOnce()
-{
-	bool temp = bEnabled;
-
-	bEnabled = true;
-	bool result = CheckForUpdates();
-	bEnabled = temp;
+	remove(tempPath.c_str());
 
 	return result;
+}
+
+bool Updater::CheckAsync()
+{
+	ThreadWork::AddThread(new cThread([](cThread* pThread, LPVOID pParam)
+		{
+			CheckUpd();
+		}, nullptr));
+
+	return true;
+}
+
+bool Updater::CheckSync()
+{
+	return CheckUpd();
 }
 
 void Updater::LoadConfig()

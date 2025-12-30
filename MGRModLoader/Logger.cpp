@@ -1,25 +1,35 @@
 #include "ModLoader.h"
 #include <Windows.h>
 #include <assert.h>
+#include <Fw.h>
+#include <sys/stat.h>
 
 void Logger::Init()
 {
 	LoadConfig();
 
-	if (!LogFilePath[0])
+	GetModuleFileNameA(nullptr, LogFilePath, MAX_PATH);
+	struct stat s;
+	if (stat(LogFilePath, &s) == 0)
 	{
-		GetModuleFileNameA(nullptr, LogFilePath, MAX_PATH);
-		if (char* lastSlash = strrchr(LogFilePath, '\\'))
-			*lastSlash = 0;
-
-		strcat(LogFilePath, "\\LoaderLog.log");
+		if ((s.st_mode & S_IFMT) & S_IFDIR) Fw::String::append(LogFilePath, "LoaderLog.log");
+		else
+		{
+			char* lastSlash = strrchr(LogFilePath, '\\');
+			if (lastSlash)
+			{
+				lastSlash[1] = '\0';
+				Fw::String::append(LogFilePath, "LoaderLog.log");
+			}
+			// else Fw::String::copy(LogFilePath, "LoaderLog.log", MAX_PATH); // Unlikely case, but we can handle it
+		}
 	}
+	Open();
+}
 
-	if (!bEnabled)
-		return;
-
-	if (!LogFile)
-		Open();
+void Logger::Shutdown()
+{
+	Close();
 }
 
 void Logger::LoadConfig()
@@ -38,26 +48,10 @@ void Logger::SaveConfig()
 	ini.WriteBool("ModLoader", "FlushImmediately", bFlushImmediately);
 }
 
-void Logger::SetPath(const char* path)
-{
-	strcpy(LogFilePath, path);
-}
-
 void Logger::Open()
 {
-	if (LogFile)
-		return;
-
-	if (!LogFilePath[0])
-	{
-		GetModuleFileNameA(nullptr, LogFilePath, MAX_PATH);
-		if (char* lastSlash = strrchr(LogFilePath, '\\'))
-			*lastSlash = 0;
-
-		strcat(LogFilePath, "\\LoaderLog.log");
-	}
-
-	LogFile = fopen(LogFilePath, "w");
+	LogFile = fopen(LogFilePath, "w"); // using safe version will prevent you from opening files from explorer, apparently
+	assert(LogFile != nullptr);
 }
 
 void Logger::Close()
@@ -71,75 +65,71 @@ void Logger::Close()
 
 void Logger::ReOpen()
 {
-	if (!(LogFile = freopen(LogFilePath, "w", LogFile)))
-		assert(!"Failed to reopen log file");
+	LogFile = freopen(LogFilePath, "w", LogFile);
+}
+
+void Logger::SetPath(const char* path)
+{
+	Fw::String::copy(LogFilePath, path, MAX_PATH);
 }
 
 void Logger::Flush()
 {
-	if (bFlushImmediately && LogFile)
+	if (LogFile)
 		fflush(LogFile);
 }
 
 void Logger::vPrintf(const char* format, va_list args)
 {
-	if (!bEnabled)
+	if (!bEnabled || !LogFile)
 		return;
 
-	Open();
+	SYSTEMTIME sys;
+	GetLocalTime(&sys);
 
-	if (!LogFile)
-		return;
+	fprintf_s(LogFile, "[%02d:%02d:%02d.%03d] ", sys.wHour, sys.wMinute, sys.wSecond, sys.wMilliseconds);
+	vfprintf_s(LogFile, format, args);
 
-	vfprintf(LogFile, format, args);
-
-	Flush();
-}
-
-void Logger::Printf(const char* format, ...)
-{
-	if (!bEnabled)
-		return;
-
-	Open();
-
-	if (!LogFile)
-		return;
-
-	va_list args;
-	va_start(args, format);
-
-	vPrintf(format, args);
-
-	va_end(args);
-
-	Flush();
+	if (bFlushImmediately)
+		Flush();
 }
 
 void Logger::PrintfLn(const char* format, ...)
 {
-	if (!bEnabled)
-		return;
-
-	Open();
-
-	if (!LogFile)
+	if (!bEnabled || !LogFile)
 		return;
 
 	va_list args;
 	va_start(args, format);
-
-	SYSTEMTIME time;
-	GetLocalTime(&time);
-
-	Printf("[%02d:%02d:%02d.%03d] ", time.wHour, time.wMinute, time.wSecond, time.wMilliseconds);
 	vPrintf(format, args);
-	Printf("\n");
-
-#if LOGGER_DEBUG
-	Utils::String str;
-	str.formatV(format, args);
-	LatestLog.push_back({ Utils::format((Utils::String("[%02d:%02d:%02d.%03d] ") + str).c_str(), time.wHour, time.wMinute, time.wSecond, time.wMilliseconds), 3.f});
-#endif
 	va_end(args);
+	fprintf_s(LogFile, "\n");
+
+	if (bFlushImmediately)
+		Flush();
+}
+
+void Logger::Printf(const char* format, ...)
+{
+	if (!bEnabled || !LogFile)
+		return;
+
+	va_list args;
+	va_start(args, format);
+	vPrintf(format, args);
+	va_end(args);
+}
+
+void Logger::PrintfNoTime(const char* format, ...)
+{
+	if (!bEnabled || !LogFile)
+		return;
+
+	va_list args;
+	va_start(args, format);
+	vfprintf_s(LogFile, format, args);
+	va_end(args);
+
+	if (bFlushImmediately)
+		Flush();
 }

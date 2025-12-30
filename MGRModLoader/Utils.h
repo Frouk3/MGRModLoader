@@ -112,6 +112,9 @@ namespace Utils
             return *this;
         }
 
+		char* begin() { return m_string; }
+		char* end() { return m_string + m_length; }
+
         void append(const char* str)
         {
             if (!str) 
@@ -135,12 +138,12 @@ namespace Utils
 
         bool operator==(const String& other) const
         {
-            return m_length == other.m_length && strcmp(c_str(), other.c_str()) == 0;
+			return stricmp(c_str(), other.c_str()) == 0;
         }
 
         bool operator==(const char* str) const
         {
-            return str && m_length == strlen(str) && strcmp(c_str(), str) == 0;
+			return stricmp(c_str(), str) == 0;
         }
 
         bool operator!=(const String& other) const { return !(*this == other); }
@@ -336,12 +339,61 @@ namespace Utils
 
             return nullptr;
         }
+
+        String split(char delimiter, size_t index) const
+        {
+            size_t start = 0;
+            size_t end = 0;
+            size_t currentIndex = 0;
+            while (end <= m_length)
+            {
+                if (end == m_length || m_string[end] == delimiter)
+                {
+                    if (currentIndex == index)
+                    {
+                        return substr(start, end - start);
+                    }
+                    currentIndex++;
+                    start = end + 1;
+                }
+                end++;
+            }
+            return {};
+		}
+
+        String split(char delimiter) const
+        {
+            return split(delimiter, 0);
+		}
+
+        void erase(size_t pos, size_t len)
+        {
+            if (pos >= m_length) return;
+            if (pos + len > m_length)
+                len = m_length - pos;
+            memmove(m_string + pos, m_string + pos + len, m_length - (pos + len) + 1);
+            m_length -= len;
+		}
+
+        // Returns -1 if not found
+        size_t find(const char* substr, size_t startPos = 0) const
+        {
+            if (!substr || startPos >= m_length) return -1;
+            const char* found = strstr(m_string + startPos, substr);
+            if (found)
+                return found - m_string;
+
+            return -1;
+        }
     };
 
 	inline char* formatPath(char* buffer)
 	{
-		while (char* chr = strchr(buffer, '/'))
-			*chr = '\\';
+		for (int i = strlen(buffer) - 1; i >= 0; i--)
+        {
+            if (buffer[i] == '/')
+                buffer[i] = '\\';
+		}
 
 		return buffer;
 	}
@@ -351,10 +403,9 @@ namespace Utils
 		static char buff[MAX_PATH];
 		memset(buff, 0, MAX_PATH);
 
-		strcpy(buff, buffer);
+        strcpy_s(buff, MAX_PATH, buffer);
 
-		while (char* chr = strchr(buff, '/'))
-			*chr = '\\';
+        formatPath(buff);
 
 		return buff;
 	}

@@ -1,123 +1,48 @@
-#include <shared.h>
 #include <Events.h>
 #include "gui.h"
 #include "imgui/imgui.h"
-#include "ini.h"
 #include "ModLoader.h"
 #include <GameMenuStatus.h>
-#define TAKE_TIMER_SNAPSHOTS 0
-#include "Timer.hpp"
 #include "FilesTools.hpp"
-#include "Hooks.h"
+#include <Hooks.h>
+#include "ThreadWork.hpp"
 
-bool bOpenUpdaterMB = false;
+Hw::cKeyboardState g_KeyboardState;
 
-class ModLoaderPlugin
+bool bKeyboardInputAvailable = true;
+
+char g_KeyHoldState[Hw::KeyboardManager::MAX_KEY_MAP_FLAG] = { 0 };
+
+typedef HRESULT(WINAPI* GetDeviceState_t)(LPDIRECTINPUTDEVICE8W, DWORD, LPVOID);
+static GetDeviceState_t oGetDeviceState = nullptr;
+
+HRESULT WINAPI hkGetDeviceState(LPDIRECTINPUTDEVICE8W pThis, DWORD lpdwData, LPVOID pBuffer)
 {
-public:
-	static inline void InitGui()
+	if (!ModLoader::bInit)
+		return oGetDeviceState(pThis, lpdwData, pBuffer);
+
+	if (gui::GUIHotkey.m_bToggle)
 	{
-		Events::OnDeviceReset.before += gui::OnReset::Before;
-		Events::OnDeviceReset.after += gui::OnReset::After;
-		Events::OnPresent += gui::OnEndScene;
+		if (pBuffer == &g_KeyHoldState)
+			return oGetDeviceState(pThis, lpdwData, pBuffer);
+
+		if (pThis == Hw::KeyboardManager::m_pKeyboardDevice)
+			return 0x8007001E;
+
+		if (pThis == Hw::MouseManager::m_pMouseDevice)
+			return 0x8007001E;
 	}
 
-	ModLoaderPlugin()
-	{
-		CTimer timer;
-
-		sHooks::Init();
-
-		gui::GUIHotkey.Load();
-
-		InitGui();
-
-		Logger::Init();
-		LOG("Initialization(version %s)", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion).c_str());
-		if (!ModloaderHeap.create(-1, "MLHEAP"))
-			LOGERROR("Failed to initialize heap.");
-
-		ModLoader::Startup();
-
-		for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
-		{
-			prof->FileWalk([&](FileSystem::File& file)
-				{
-					if (const char* ext = strrchr(file.getName(), '.'); ext && !strcmp(ext, ".cpk"))
-						++CriWare::iAvailableCPKs;
-				});
-		}
-
-		{
-			injector::scoped_unprotect vp(shared::base + 0x14CDE20, 4u);
-
-			*(int*)(shared::base + 0x14CDE20) += CriWare::iAvailableCPKs;
-		}
-
-		Updater::Init();
-
-		Events::OnGameStartupEvent += [](cGame *)
-			{
-				if (Updater::bEnabled && Updater::eUpdateStatus == Updater::UPDATE_STATUS_AVAILABLE)
-					bOpenUpdaterMB = true;
-			};
-		
-		Events::OnMainCleanupEvent += []()
-			{
-				gui::GUIHotkey.Save();
-
-				Updater::SaveConfig();
-				Logger::SaveConfig();
-				ModLoader::Shutdown();
-				Logger::Close();
-			};
-
-		Events::OnUpdateEvent.after += []()
-			{
-				if (g_GameMenuStatus == InMenu)
-					gui::GUIHotkey.Update();
-			};
-
-		Events::OnSceneCleanupEvent.after += [](void*)
-			{
-				gui::GUIHotkey.m_bToggle = false;
-			};
-		
-		timer.stop();
-
-		LOG_TIMER(timer, "Took %.3f seconds");
-	}
-} ModLoaderInitInstance;
-
-char* stristr(const char* str1, const char* str2) 
-{
-	if (!*str2)
-		return (char*)str1;
-
-	for (; *str1 != '\0'; str1++) 
-	{
-		const char* h = str1;
-		const char* n = str2;
-
-		while (*h != '\0' && *n != '\0' && tolower((unsigned char)*h) == tolower((unsigned char)*n)) 
-		{
-			h++;
-			n++;
-		}
-
-		if (*n == '\0')
-			return (char*)str1;
-	}
-
-	return NULL;
+	return oGetDeviceState(pThis, lpdwData, pBuffer);
 }
 
 bool Explorer_Enabled = false;
 FileSystem::Directory* Explorer_MainDirectory = nullptr;
 const char* Explorer_CustomFilter = "";
-Utils::String Explorer_Filter = ""; // So we could make a combo with switching extensions
+Utils::String Explorer_Filter = ""; // current extension filter (e.g. "*.dat")
 std::vector<FileSystem::Directory*> Explorer_selectedDirs;
 std::vector<FileSystem::File*> Explorer_selectedFiles;
+
 enum Explorer_Flags : unsigned int
 {
 	EXPLR_CHOOSE_ALLOW_DIRECTORY = 1,
@@ -133,347 +58,522 @@ unsigned int Explorer_flags = EXPLR_CHOOSE_ALLOW_FILE | EXPLR_CHOOSE_ALLOW_DIREC
 std::function<void(const std::vector<FileSystem::Directory*>&)> Explorer_OnSelectDirectoryCallback;
 std::function<void(const std::vector<FileSystem::File*>&)> Explorer_OnSelectFileCallback;
 
-void Explorer_SetCallback(const std::function<void(const std::vector<FileSystem::Directory*>&)>& dirCallback, const std::function<void(const std::vector<FileSystem::File*>&)>& fileCallback)
+static inline void Explorer_SetCallback(
+	const std::function<void(const std::vector<FileSystem::Directory*>&)>& dirCallback,
+	const std::function<void(const std::vector<FileSystem::File*>&)>& fileCallback)
 {
 	Explorer_OnSelectDirectoryCallback = dirCallback;
 	Explorer_OnSelectFileCallback = fileCallback;
 }
 
-void Explorer_Setup(const char* filter, FileSystem::Directory* mainDir, const std::function<void(const std::vector<FileSystem::Directory*>&)>& dirCb = nullptr, const std::function<void(const std::vector<FileSystem::File*>&)>& fileCb = nullptr, unsigned int flags = EXPLR_CHOOSE_ALLOW_DIRECTORY | EXPLR_CHOOSE_ALLOW_FILE)
+void Explorer_Setup(
+	const char* filter,
+	FileSystem::Directory* mainDir,
+	const std::function<void(const std::vector<FileSystem::Directory*>&)>& dirCb /*= nullptr*/,
+	const std::function<void(const std::vector<FileSystem::File*>&)>& fileCb /*= nullptr*/,
+	unsigned int flags /*= EXPLR_CHOOSE_ALLOW_DIRECTORY | EXPLR_CHOOSE_ALLOW_FILE*/)
 {
 	Explorer_selectedDirs.clear();
 	Explorer_selectedFiles.clear();
 
 	Explorer_Enabled = true;
-	Explorer_CustomFilter = filter;
+	Explorer_CustomFilter = filter ? filter : "";
 	Explorer_MainDirectory = mainDir;
+	Explorer_flags = flags;
 
-	Explorer_Filter = filter;
+	Explorer_Filter = Explorer_CustomFilter && Explorer_CustomFilter[0] ? Explorer_CustomFilter : "*";
 
 	Explorer_SetCallback(dirCb, fileCb);
 }
 
+static inline void Explorer_UniquePush(std::vector<FileSystem::Directory*>& vec, FileSystem::Directory* dir)
+{
+	if (!dir) return;
+	for (auto* d : vec) if (d == dir) return;
+	vec.push_back(dir);
+}
+static inline void Explorer_UniquePush(std::vector<FileSystem::File*>& vec, FileSystem::File* f)
+{
+	if (!f) return;
+	for (auto* x : vec) if (x == f) return;
+	vec.push_back(f);
+}
+
+static inline bool Explorer_FileMatchesFilter(const char* name, const Utils::String& filter)
+{
+	if (!name || !*name) return false;
+	if (filter.empty() || filter == "*" || filter == "*.*") return true;
+
+	// Accept "*.ext" or ".ext" or "ext"
+	const char* dot = strrchr(name, '.');
+	if (!dot) return false;
+
+	Utils::String wanted = filter;
+	// Normalize to ".ext"
+	if (wanted[0] == '*')
+		wanted.erase(0, 1); // remove leading '*'
+	if (wanted[0] == '.')
+	{
+		// ok
+	}
+	else
+	{
+		// "ext" -> ".ext"
+		wanted = Utils::format(".%s", wanted.c_str());
+	}
+
+	return stricmp(dot, wanted.c_str()) == 0;
+}
+
 void DrawMiniExplorer()
 {
-	if (Explorer_Enabled && Explorer_MainDirectory)
+	if (!Explorer_Enabled || !Explorer_MainDirectory)
+		return;
+
+	// Parse multi-string filter list into allowedExtensions
+	std::vector<Utils::String> allowedExtensions;
 	{
-		std::vector<Utils::String> allowedExtensions;
-
 		const char* item = Explorer_CustomFilter;
-
-		const unsigned int flags = Explorer_flags;
-
 		while (item && *item)
 		{
-			if (*item)
-				allowedExtensions.push_back(item);
-
+			allowedExtensions.emplace_back(item);
 			item += strlen(item) + 1;
 		}
+		if (allowedExtensions.empty())
+			allowedExtensions.emplace_back("*");
+	}
 
-		static FileSystem::Directory* queueDirectory = nullptr;
-		static void* lastItemChoosen = nullptr;
+	static FileSystem::Directory* queueDirectory = nullptr;
+	static void* lastItemChoosen = nullptr;
 
-		auto WasDirSelected = [&](FileSystem::Directory* dir) -> bool
-			{
-				for (auto& sbd : Explorer_selectedDirs)
-					if (sbd == dir)
-						return true;
-
-				return lastItemChoosen == dir;
-			};
-
-		auto WasFileSelected = [&](FileSystem::File* file) -> bool
-			{
-				for (auto& files : Explorer_selectedFiles)
-					if (file == files)
-						return true;
-
-				return lastItemChoosen == file;
-			};
-
-		ImGui::Begin("##MiniExplorer", &Explorer_Enabled, ImGuiWindowFlags_NoCollapse);
-		ImVec2 pos = ImGui::GetCursorPos();
-
-		ImGui::SetNextWindowSize(ImVec2(ImGui::GetWindowContentRegionMax().x - ImGui::GetStyle().WindowPadding.x, 70.f));
-		ImGui::SetNextWindowPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - 80.f));
-		ImGui::BeginChild("FileBar", ImVec2(ImGui::GetWindowContentRegionMax().x, 40.f), ImGuiChildFlags_Borders);
-		ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionAvail().x - 110.f, ImGui::GetWindowContentRegionMax().y - 30.f));
-		if (ImGui::Button("OK", ImVec2(50, 25)))
+	auto WasDirSelected = [&](FileSystem::Directory* dir) -> bool
 		{
-			if (Explorer_OnSelectDirectoryCallback)
-				Explorer_OnSelectDirectoryCallback(Explorer_selectedDirs);
-			if (Explorer_OnSelectFileCallback)
-				Explorer_OnSelectFileCallback(Explorer_selectedFiles);
-
-			Explorer_selectedDirs.clear();
-			Explorer_selectedFiles.clear();
-
-			Explorer_Enabled = false;
-			Explorer_CustomFilter = "";
-		}
-		ImGui::SameLine();
-		if (ImGui::Button("Cancel", ImVec2(50, 25)))
+			if (lastItemChoosen == dir) return true;
+			for (auto& sbd : Explorer_selectedDirs)
+				if (sbd == dir) return true;
+			return false;
+		};
+	auto WasFileSelected = [&](FileSystem::File* file) -> bool
 		{
-			Explorer_selectedDirs.clear();
-			Explorer_selectedFiles.clear();
+			if (lastItemChoosen == file) return true;
+			for (auto& f : Explorer_selectedFiles)
+				if (f == file) return true;
+			return false;
+		};
 
-			Explorer_Enabled = false;
-			Explorer_CustomFilter = "";
-		}
-		ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionMax().x - 120.f, ImGui::GetCursorStartPos().y));
-		ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
-		Utils::String ExplorerFilterPreview = "*";
-		if (Explorer_Filter.c_str()[0] != '*')
-			ExplorerFilterPreview += Explorer_Filter;
-		else
-			ExplorerFilterPreview = Explorer_Filter;
-		if (ImGui::BeginCombo("##EXPLR_EXT_SELECT", ExplorerFilterPreview.c_str()))
+	ImGui::Begin("##MiniExplorer", &Explorer_Enabled, ImGuiWindowFlags_NoCollapse);
+
+	// Bottom action bar
+	ImVec2 pos = ImGui::GetCursorPos();
+	ImGui::SetNextWindowSize(ImVec2(ImGui::GetWindowContentRegionMax().x - ImGui::GetStyle().WindowPadding.x, 70.f));
+	ImGui::SetNextWindowPos(ImVec2(ImGui::GetWindowPos().x + ImGui::GetWindowContentRegionMin().x,
+		ImGui::GetWindowPos().y + ImGui::GetWindowSize().y - 80.f));
+	ImGui::BeginChild("FileBar", ImVec2(ImGui::GetWindowContentRegionMax().x, 40.f), ImGuiChildFlags_Borders);
+
+	// OK / Cancel
+	ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionAvail().x - 110.f, ImGui::GetWindowContentRegionMax().y - 30.f));
+	if (ImGui::Button("OK", ImVec2(50, 25)))
+	{
+		// Enforce strict flags: only one type selectable
+		if ((Explorer_flags & EXPLR_CHOOSE_STRICT) != 0)
 		{
-			if (ImGui::Selectable("Any file(*.*)", !stricmp(Explorer_Filter.c_str(), "*")))
-				Explorer_Filter = "*";
-			for (size_t i = 0; i < allowedExtensions.size(); i++)
-			{
-				const bool bIsSelected = allowedExtensions[i] == Explorer_Filter;
-
-				ImGui::PushID(i);
-				Utils::String filterPreview = "*";
-				if (allowedExtensions[i][0u] != '*')
-					filterPreview += allowedExtensions[i];
-				else
-					filterPreview = allowedExtensions[i];
-				if (ImGui::Selectable(filterPreview.c_str(), bIsSelected))
-					Explorer_Filter = allowedExtensions[i];
-
-				ImGui::PopID();
-			}
-			ImGui::EndCombo();
-		}
-		ImGui::EndChild();
-		ImGui::SetCursorPos(pos);
-		ImGui::PushID("##History");
-		{
-			FileSystem::Directory* direct = Explorer_MainDirectory;
-			lib::StaticArray<FileSystem::Directory*, 32> directories;
-
-			do
-			{
-				directories.push_front(direct);
-			} while ((direct = direct->m_parent) != nullptr);
-
-			for (auto& dir : directories)
-			{
-				if (ImGui::SmallButton(dir->getName()))
-					Explorer_MainDirectory = dir;
-
-				if (dir != directories.back())
-					ImGui::SameLine();
-			}
-		}
-		ImGui::PopID();
-		
-		ImGui::Separator();
-
-		if (Explorer_MainDirectory->m_parent && ImGui::Selectable("..", false, ImGuiSelectableFlags_AllowDoubleClick))
-		{
-			lastItemChoosen = Explorer_MainDirectory;
-			Explorer_MainDirectory = Explorer_MainDirectory->m_parent;
+			if ((Explorer_flags & EXPLR_CHOOSE_ALLOW_FILE) != 0 && (Explorer_flags & EXPLR_CHOOSE_ALLOW_DIRECTORY) == 0)
+				Explorer_selectedDirs.clear();
+			else if ((Explorer_flags & EXPLR_CHOOSE_ALLOW_DIRECTORY) != 0 && (Explorer_flags & EXPLR_CHOOSE_ALLOW_FILE) == 0)
+				Explorer_selectedFiles.clear();
 		}
 
-		for (auto& subdir : Explorer_MainDirectory->m_subdirs)
+		if (Explorer_OnSelectDirectoryCallback)
+			Explorer_OnSelectDirectoryCallback(Explorer_selectedDirs);
+		if (Explorer_OnSelectFileCallback)
+			Explorer_OnSelectFileCallback(Explorer_selectedFiles);
+
+		Explorer_selectedDirs.clear();
+		Explorer_selectedFiles.clear();
+
+		Explorer_Enabled = false;
+		Explorer_CustomFilter = "";
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Cancel", ImVec2(50, 25)))
+	{
+		Explorer_selectedDirs.clear();
+		Explorer_selectedFiles.clear();
+
+		Explorer_Enabled = false;
+		Explorer_CustomFilter = "";
+	}
+
+	// Filter combo
+	ImGui::SetCursorPos(ImVec2(ImGui::GetContentRegionMax().x - 120.f, ImGui::GetCursorStartPos().y));
+	ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x);
+	Utils::String ExplorerFilterPreview = "*";
+	if (Explorer_Filter.c_str()[0] != '*')
+		ExplorerFilterPreview += Explorer_Filter;
+	else
+		ExplorerFilterPreview = Explorer_Filter;
+
+	if (ImGui::BeginCombo("##EXPLR_EXT_SELECT", ExplorerFilterPreview.c_str()))
+	{
+		if (ImGui::Selectable("Any file(*.*)", stricmp(Explorer_Filter.c_str(), "*") == 0 || stricmp(Explorer_Filter.c_str(), "*.*") == 0))
+			Explorer_Filter = "*";
+
+		for (size_t i = 0; i < allowedExtensions.size(); i++)
 		{
-			bool selectable = ImGui::Selectable(subdir->getName(), WasDirSelected(subdir), ImGuiSelectableFlags_AllowDoubleClick);
-			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && selectable)
+			const bool bIsSelected = (allowedExtensions[i] == Explorer_Filter);
+			ImGui::PushID((int)i);
+
+			Utils::String filterPreview = "*";
+			if (allowedExtensions[i][0u] != '*')
+				filterPreview += allowedExtensions[i];
+			else
+				filterPreview = allowedExtensions[i];
+
+			if (ImGui::Selectable(filterPreview.c_str(), bIsSelected))
+				Explorer_Filter = allowedExtensions[i];
+
+			ImGui::PopID();
+		}
+		ImGui::EndCombo();
+	}
+	ImGui::EndChild();
+
+	// Breadcrumbs
+	ImGui::SetCursorPos(pos);
+	ImGui::PushID("##History");
+	{
+		FileSystem::Directory* direct = Explorer_MainDirectory;
+		lib::StaticArray<FileSystem::Directory*, 32> directories;
+
+		do
+		{
+			directories.pushFront(direct);
+		} while ((direct = direct->m_parent) != nullptr);
+
+		for (auto& dir : directories)
+		{
+			if (ImGui::SmallButton(dir->getName()))
+				Explorer_MainDirectory = dir;
+
+			if (dir != directories.back())
+				ImGui::SameLine();
+		}
+	}
+	ImGui::PopID();
+
+	ImGui::Separator();
+
+	// Up one level
+	if (Explorer_MainDirectory->m_parent &&
+		ImGui::Selectable("..", false, ImGuiSelectableFlags_AllowDoubleClick))
+	{
+		lastItemChoosen = Explorer_MainDirectory;
+		Explorer_MainDirectory = Explorer_MainDirectory->m_parent;
+		queueDirectory = nullptr;
+	}
+
+	// Directories list
+	for (auto& subdir : Explorer_MainDirectory->m_subdirs)
+	{
+		const bool canChooseDir = (Explorer_flags & EXPLR_CHOOSE_ALLOW_DIRECTORY) != 0;
+		bool selectable = ImGui::Selectable(subdir->getName(),
+			WasDirSelected(subdir),
+			ImGuiSelectableFlags_AllowDoubleClick);
+
+		if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && selectable)
+		{
+			// Navigate into directory
+			queueDirectory = subdir;
+			lastItemChoosen = subdir;
+		}
+		else if (ImGui::IsItemHovered() && canChooseDir)
+		{
+			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false))
 			{
-				queueDirectory = subdir;
-				lastItemChoosen = subdir;
-			}
-			else if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false) && ImGui::IsItemHovered() && flags & EXPLR_CHOOSE_ALLOW_DIRECTORY)
-			{
-				if (shared::IsKeyPressed(VK_LCONTROL, true))
-				{
-					Explorer_selectedDirs.push_back(subdir);
-				}
-				else
+				const bool multi = g_KeyboardState.on(Hw::KB_CTRL_L);
+				if (!multi)
 				{
 					Explorer_selectedDirs.clear();
 					Explorer_selectedFiles.clear();
-					Explorer_selectedDirs.push_back(subdir);
 				}
-
+				Explorer_UniquePush(Explorer_selectedDirs, subdir);
 				lastItemChoosen = subdir;
 			}
 		}
-		for (auto& files : Explorer_MainDirectory->m_files)
-		{
-			if (Explorer_Filter != "*" && allowedExtensions.size())
-			{
-				bool bFilterOut = false;
-				if (const char* ext = strrchr(files.getName(), '.'); ext)
-				{
-					if (!stricmp(ext, Explorer_Filter.c_str()))
-						bFilterOut = true;
-				}
-
-				if (!bFilterOut)
-					continue;
-			}
-			bool selectable = ImGui::Selectable(Utils::format("%s [%s]", files.getName(), Utils::getProperSize(files.m_filesize).c_str()).c_str(), WasFileSelected(&files), ImGuiSelectableFlags_AllowDoubleClick);
-
-			if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && selectable)
-			{
-
-			}
-			else if (ImGui::IsItemHovered() && flags & EXPLR_CHOOSE_ALLOW_FILE)
-			{
-				if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false))
-				{
-					if (shared::IsKeyPressed(VK_LCONTROL, true))
-					{
-						Explorer_selectedFiles.push_back(&files);
-					}
-					else
-					{
-						Explorer_selectedDirs.clear();
-						Explorer_selectedFiles.clear();
-						Explorer_selectedFiles.push_back(&files);
-					}
-					lastItemChoosen = &files;
-				}
-			}
-		}
-
-		if (queueDirectory)
-		{
-			Explorer_MainDirectory = queueDirectory;
-			queueDirectory = nullptr;
-		}
-		ImGui::End();
 	}
+
+	// Files list
+	for (auto& files : Explorer_MainDirectory->m_files)
+	{
+		if (!Explorer_FileMatchesFilter(files.getName(), Explorer_Filter))
+			continue;
+
+		Utils::String label = Utils::format("%s [%s]",
+			files.getName(),
+			Utils::getProperSize(files.m_filesize).c_str());
+
+		bool selectable = ImGui::Selectable(label.c_str(),
+			WasFileSelected(&files),
+			ImGuiSelectableFlags_AllowDoubleClick);
+
+		if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left) && selectable)
+		{
+			// Optional: on double click, confirm selection if strict files-only
+			if ((Explorer_flags & EXPLR_CHOOSE_STRICT) &&
+				(Explorer_flags & EXPLR_CHOOSE_ALLOW_FILE) &&
+				!(Explorer_flags & EXPLR_CHOOSE_ALLOW_DIRECTORY))
+			{
+				Explorer_selectedDirs.clear();
+				Explorer_selectedFiles.clear();
+				Explorer_UniquePush(Explorer_selectedFiles, &files);
+
+				if (Explorer_OnSelectFileCallback)
+					Explorer_OnSelectFileCallback(Explorer_selectedFiles);
+
+				Explorer_selectedFiles.clear();
+				Explorer_Enabled = false;
+				Explorer_CustomFilter = "";
+			}
+		}
+		else if (ImGui::IsItemHovered() && (Explorer_flags & EXPLR_CHOOSE_ALLOW_FILE))
+		{
+			if (ImGui::IsMouseClicked(ImGuiMouseButton_Left, false))
+			{
+				const bool multi = g_KeyboardState.on(Hw::KB_CTRL_L);
+				if (!multi)
+				{
+					Explorer_selectedDirs.clear();
+					Explorer_selectedFiles.clear();
+				}
+				Explorer_UniquePush(Explorer_selectedFiles, &files);
+				lastItemChoosen = &files;
+			}
+		}
+	}
+
+	if (queueDirectory)
+	{
+		Explorer_MainDirectory = queueDirectory;
+		queueDirectory = nullptr;
+	}
+
+	ImGui::End();
 }
 
-int ImMessageBox(const char* label, const char* description, unsigned int type)
+class ModLoaderPlugin
 {
-	int result = 0;
-	const ImVec2 ButtonSize(80.f, 0.f); // Slightly wider buttons for better usability
-	const float ButtonSpacing = 10.f;
-
-	if (ImGui::BeginPopupModal(label, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings))
+public:
+	static inline void InitGUI()
 	{
-		ImGui::PushTextWrapPos(ImGui::GetFontSize() * 80.f);
-		ImGui::Text("%s", description); // Wrapped text for better formatting
-		ImGui::PopTextWrapPos();
-		ImGui::Dummy(ImVec2(0.0f, 10.0f)); // Add vertical spacing
+		Events::OnPresent.before += gui::OnEndScene;
+		Events::OnDeviceReset.before += gui::OnReset::Before;
+		Events::OnDeviceReset.after += gui::OnReset::After;
+	}
 
-		auto AddButton = [&](const char* text, int returnValue) -> bool
-			{
-				if (ImGui::Button(text, ButtonSize))
+	ModLoaderPlugin()
+	{
+		InitGUI();
+
+		Logger::Init();
+
+		LOG("Running on Mod Loader v%s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion));
+
+		ModloaderHeap.create(-1, "ModloaderHeap");
+		FileSystem::Init(64);
+
+		ModLoader::Startup();
+		Updater::Init();
+
+		if (!FileSystem::PathExists((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str()))
+			CreateDirectoryA((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str(), nullptr);
+
+		for (ModLoader::ModProfile *&prof : ModLoader::Profiles)
+		{
+			prof->FileWalk([&](FileSystem::File &file)
 				{
-					result = returnValue;
-					return true;
+					if (const char* chr = strrchr(file.getName(), '.'); !stricmp(chr, ".cpk"))
+						++CriWare::iAvailableCPKs;
+				});
+		}
+
+		*(int*)(shared::base + 0x14CDE20) += CriWare::iAvailableCPKs;
+
+		gui::GUIHotkey.Load();
+
+		Events::OnGameStartupEvent.after += [](cGame *)
+			{
+				ThreadWork::AddThread(new cThread([](cThread* pThread, LPVOID pParam)
+					{
+						Sleep(1000);
+						void** vftable = *(void***)Hw::KeyboardManager::m_pKeyboardDevice;
+						oGetDeviceState = (GetDeviceState_t)vftable[9];
+						injector::WriteMemory<void*>((void**)&vftable[9], (void*)hkGetDeviceState, true);
+
+						LOG("Input hook installed.");
+					}, nullptr));
+
+				Hw::KeyboardManager::InitState(g_KeyboardState);
+
+				/*
+				FileSystem::Directory pTestDir((ModLoader::GetModFolder() / "test" / "pl1010" / "").c_str());
+				pTestDir.scanFiles(true, false, FileSystem::Directory::SCANFLAG_ALL);
+				std::vector<DataArchiveTools::FileStructure> outFiles;
+				for (auto &file : pTestDir.m_files)
+				{
+					DataArchiveTools::FileStructure fs;
+					fs.m_filename = file.getName();
+					fs.m_fileSize = file.m_filesize;
+					bool bRead = FileSystem::ReadSyncAlloc(file.m_path.c_str(), &fs.m_file, &fs.m_fileSize);
+					if (bRead)
+						outFiles.push_back(fs);
+					else
+						LOGERROR("Failed to read file %s for testing.", file.m_path.c_str());
 				}
-				return false;
+				if (!outFiles.empty())
+				{
+					if (DataArchiveTools::rebuildFmerge(outFiles, (ModLoader::GetModFolder() / "test" / "pl1010_rebuilt.dat").c_str()))
+						LOGERROR("Error occured.");
+					else
+						LOG("Rebuilt fmerge file successfully.");
+				}
+				*/
 			};
 
-		// Center buttons
-		ImGui::SetCursorPosX((ImGui::GetWindowSize().x - (
-			(type == MB_YESNOCANCEL ? 3 : (type == MB_OKCANCEL || type == MB_YESNO ? 2 : 1)) * (ButtonSize.x + ButtonSpacing) - ButtonSpacing
-			)) * 0.5f);
+		Events::OnUpdateEvent += []()
+			{
+				if (bKeyboardInputAvailable && *(int*)(shared::base + 0x19D509C))
+				{
+					bool bUpdateStrokes = true;
+					if (Hw::KeyboardManager::m_pKeyboardDevice)
+					{
+						HRESULT hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
+						if (hr == DIERR_INPUTLOST)
+						{
+							hr = Hw::KeyboardManager::m_pKeyboardDevice->Acquire();
+						}
+						if (hr == DIERR_NOTACQUIRED)
+						{
+							bUpdateStrokes = false;
+						}
 
-		switch (type)
-		{
-		case MB_OK:
-			if (AddButton("OK", IDOK)) ImGui::CloseCurrentPopup();
-			break;
+						if (SUCCEEDED(hr))
+						{
+							hr = Hw::KeyboardManager::m_pKeyboardDevice->GetDeviceState(Hw::KeyboardManager::MAX_KEY_MAP_FLAG, (LPVOID)&g_KeyHoldState);
+							if (hr == DIERR_INPUTLOST || hr == DIERR_NOTACQUIRED)
+								bUpdateStrokes = false;
+						}
+						else bUpdateStrokes = false;
+					}
+					else bUpdateStrokes = false;
+					if (bUpdateStrokes)
+					{
+						Hw::KeyboardManager::UpdateStateOnToOld(g_KeyboardState);
+						{
+							for (int i = 0; i < Hw::KEYBOARD_MAP::KB_MAP_MAX; ) // Oh right.
+							{
+								int hwKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 0];
+								int diKey = Hw::KeyboardManager::m_pStrokeHidFlag[i * 2 + 1];
 
-		case MB_OKCANCEL:
-			if (AddButton("OK", IDOK)) ImGui::CloseCurrentPopup();
-			ImGui::SameLine(0.0f, ButtonSpacing);
-			if (AddButton("Cancel", IDCANCEL)) ImGui::CloseCurrentPopup();
-			break;
+								if (g_KeyHoldState[diKey] & 0x80)
+									g_KeyboardState.m_pOn[hwKey >> 5] |= (0x80000000 >> (hwKey & 0x1F));
+								else
+									g_KeyboardState.m_pOn[hwKey >> 5] &= ~(0x80000000 >> (hwKey & 0x1F));
 
-		case MB_YESNO:
-			if (AddButton("Yes", IDYES)) ImGui::CloseCurrentPopup();
-			ImGui::SameLine(0.0f, ButtonSpacing);
-			if (AddButton("No", IDNO)) ImGui::CloseCurrentPopup();
-			break;
+								i++;
+							}
 
-		case MB_YESNOCANCEL:
-			if (AddButton("Yes", IDYES)) ImGui::CloseCurrentPopup();
-			ImGui::SameLine(0.0f, ButtonSpacing);
-			if (AddButton("No", IDNO)) ImGui::CloseCurrentPopup();
-			ImGui::SameLine(0.0f, ButtonSpacing);
-			if (AddButton("Cancel", IDCANCEL)) ImGui::CloseCurrentPopup();
-			break;
+							Hw::KeyboardManager::UpdateKeyState(g_KeyboardState);
+						}
+					}
+				}
+				else Hw::KeyboardManager::InitState(g_KeyboardState);
 
-		default:
-			break;
-		}
+				ThreadWork::UpdateThreads();
+				if (g_GameMenuStatus == InMenu) gui::GUIHotkey.Update();
+				else gui::GUIHotkey.m_bToggle = false; // force close GUI when not in menu, and make sure that input is available
+				FileSystem::UpdateReaders();
+			};
 
-		ImGui::EndPopup();
+		Events::OnMainCleanupEvent.before += []()
+			{
+				Explorer_MainDirectory = nullptr;
+				Explorer_selectedDirs.clear();
+				Explorer_selectedFiles.clear();
+
+				ThreadWork::ClearThreads();
+
+				for (int i = 0; i < CriWare::aBinders.getSize(); ++i)
+				{
+					auto& binder = CriWare::aBinders[i];
+					if (!binder)
+						continue;
+
+					if (binder->m_BinderHandle)
+					{
+						CriFsBinderHn_free(binder->m_BinderHandle);
+						binder->m_BinderHandle = nullptr;
+					}
+					operator delete(binder, (Hw::cHeap*)nullptr);
+				}
+
+				CriWare::aBinders.clear();
+
+				Updater::SaveConfig();
+				Logger::SaveConfig();
+				ModLoader::Shutdown();
+				gui::GUIHotkey.Save();
+				FileSystem::Shutdown();
+			};
+
+		Events::OnMainCleanupEvent.after += []()
+			{
+				if (ModLoader::ModLoaderPath[0])
+				{
+					Utils::String repackedDir = Utils::String(ModLoader::ModLoaderPath) / "repacked" / "";
+					if (FileSystem::PathExists(repackedDir.c_str()))
+						FileSystem::RemoveDirectoryRecursively(repackedDir.c_str()); // scary but works
+				}
+				// Make sure to free resources before heap destruction, if you'll have a leak here, that's your fault
+				for (void* pBlock = ModloaderHeap.getNextAlloc(nullptr); pBlock; pBlock = ModloaderHeap.getNextAlloc(pBlock))
+					LOGWARNING("This allocation at %p is a memory leak", pBlock);
+
+				ModloaderHeap.destroy(); // Destroying heap would also free all allocations, but we want to log leaks
+
+				LOGINFO("Cleanup complete.");
+				Logger::Shutdown();
+			};
 	}
-
-	return result;
-}
+} gModLoaderPlugin;
 
 void gui::RenderWindow()
 {
-	if (!ModLoader::bInit)
-	{
-		ImGui::Begin("Mod Loader", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize);
-		ImGui::Text("Failed to initialize Mod Loader.");
-		ImGui::End();
+	if (gui::GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF)
+		gui::GUIHotkey.m_bToggle = true;
+
+	if (!gui::GUIHotkey.m_bToggle)
 		return;
-	}
-#if LOGGER_DEBUG
-	float offsetY = 40.f;
-	size_t longestTextLength = 0;
-	for (auto& log : Logger::LatestLog)
-	{
-		unsigned char alpha = (unsigned char)(255.f * (log.second / 2.f));
-		if (log.second > 2.f)
-			alpha = 255;
-		ImGui::GetForegroundDrawList()->AddText(ImVec2(11.f, offsetY + 1.f), alpha << 24, log.first.c_str());
-		ImGui::GetForegroundDrawList()->AddText(ImVec2(10.f, offsetY), (alpha << 24) | 0x00FFFFFF, log.first.c_str());
 
-		if (log.first.length() > longestTextLength)
-			longestTextLength = log.first.length();
+	if (g_GameMenuStatus != InMenu)
+		return;
 
-		offsetY += 15.f;
-	}
-	if (!Logger::LatestLog.empty() && longestTextLength)
-	{
-		ImGui::GetBackgroundDrawList()->AddRectFilled(ImVec2(10.f, 40.f), ImVec2(longestTextLength * 9.5f + 15.f, offsetY), 0x80000000, 5.f);
-	}
-	for (int i = Logger::LatestLog.size() - 1; i >= 0; i--)
-	{
-		auto& log = Logger::LatestLog[i];
-	
-		log.second = max(log.second - ImGui::GetIO().DeltaTime, 0.0f);
+	unsigned int flags = ImGuiWindowFlags_NoCollapse;
+	if (gui::GUIHotkey.GetHotkeyType() == Hotkey::HT_ALWAYS || gui::GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF)
+		flags &= ~ImGuiWindowFlags_NoCollapse;
 
-		if (log.second <= 0.f)
+	ImGui::Begin("Mod Loader", &gui::GUIHotkey.m_bToggle, flags);
+	if (ImGui::BeginTabBar("MLTabBar"))
+	{
+		if (ImGui::BeginTabItem("Mods"))
 		{
-			Logger::LatestLog.erase(Logger::LatestLog.begin() + i);
-			continue;
-		}
-	}
-#endif
-	if (bOpenUpdaterMB)
-	{
-		ImGui::OpenPopup("Updater");
-		bOpenUpdaterMB = false;
-	}
-	ImMessageBox("Updater", Utils::format("New version of Mod Loader is available!(Current: %s, Latest: %s)", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion).c_str(), Utils::FloatStringNoTralingZeros(Updater::fLatestVersion).c_str()).c_str(), MB_OK);
-	if ((GUIHotkey.m_bToggle || GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF) && g_GameMenuStatus == InMenu)
-	{
-		ImGui::Begin("Mod Loader", GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF ? nullptr : &GUIHotkey.m_bToggle);
-		if (ImGui::BeginTabBar("Main", ImGuiTabBarFlags_NoTooltip))
-		{
-			if (ModLoader::bLoadMods && ImGui::BeginTabItem("Profiles"))
+			if (!ModLoader::bLoadMods)
+			{
+				ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "Mods are disabled from loading!");
+			}
+			else
 			{
 				static bool bSearchBar = false;
-				static Utils::String SearchBarContent;
-				if (shared::IsKeyPressed(VK_LCONTROL) && shared::IsKeyPressed('F', false))
+				static Utils::String searchBarContent;
+				if (g_KeyboardState.on(Hw::KB_CTRL_L) && g_KeyboardState.trig(Hw::KB_F))
 					bSearchBar ^= true;
 
 				if (bSearchBar)
@@ -481,400 +581,469 @@ void gui::RenderWindow()
 					ImVec4 bgColor(0.2f, 0.2f, 0.2f, 0.8f);
 					ImVec4 borderColor(0.7f, 0.7f, 0.7f, 1.0f);
 
-					ImGui::PushStyleColor(ImGuiCol_FrameBg, bgColor); 
-					ImGui::PushStyleColor(ImGuiCol_Border, borderColor);    
-					ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f); 
-					ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5)); 
+					ImGui::PushStyleColor(ImGuiCol_FrameBg, bgColor);
+					ImGui::PushStyleColor(ImGuiCol_Border, borderColor);
+					ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 8.0f);
+					ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 5));
 
 					ImGui::PushItemWidth(ImGui::GetWindowContentRegionMax().x - 100.f);
-					ImGui::InputText("##search", SearchBarContent);
+					ImGui::InputText("##search", searchBarContent);
 					ImGui::SetItemDefaultFocus();
+					ImGui::PopItemWidth();
 
 					ImGui::SameLine();
 					if (ImGui::Button("Clear", ImVec2(ImGui::GetContentRegionAvail().x - 5.f, 0)))
 					{
-						SearchBarContent.clear();
-						SearchBarContent.shrink_to_fit();
+						searchBarContent.clear();
+						searchBarContent.shrink_to_fit();
 					}
 
 					ImGui::PopStyleVar(2);
 					ImGui::PopStyleColor(2);
 				}
 
-				if (ImGui::BeginTable("ML_PROFILES", 2, ImGuiTableFlags_Resizable | ImGuiTableFlags_Borders))
+				if (ImGui::BeginTable("ModsTable", 3, ImGuiTableFlags_Borders | ImGuiTableFlags_Resizable | ImGuiTableFlags_RowBg))
 				{
-					static bool bRequireMoving = false;
-					static size_t profileToMove = -1;
-					static size_t profileToSwap = -1;
-
-					ImGui::TableSetupColumn("Mods");
+					ImGui::TableSetupColumn("Mod Name");
 					ImGui::TableSetupColumn("Author");
+					ImGui::TableSetupColumn("Version");
+
+					static int moveTo = -1, moveFrom = -1;
+					static bool bRequireMoving = false;
+
 					ImGui::TableHeadersRow();
 					for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 					{
-						Utils::String title = prof->m_name;
-
-						if (prof->m_ModInfo && !prof->m_ModInfo->m_title.empty())
 						{
-							title = prof->m_ModInfo->m_title;
-							if (!prof->m_ModInfo->m_version.empty())
-								title += Utils::format(" - %s", prof->m_ModInfo->m_version.c_str());
+							Utils::String searchTarg = prof->m_name;
+							if (prof->m_ModInfo && !prof->m_ModInfo->m_title.empty())
+								searchTarg = prof->m_ModInfo->m_title;
+
+							if (!searchBarContent.empty() && !strstr(searchTarg.lower(), Utils::strlow(searchBarContent.c_str()).c_str()))
+								continue;
 						}
-
-						if (!SearchBarContent.empty() && !stristr(title.c_str(), SearchBarContent.c_str()))
-							continue;
-
 						ImGui::TableNextRow();
 						ImGui::PushID(prof);
-
 						ImGui::TableNextColumn();
-
-						if (ImGui::Checkbox(title.c_str(), &prof->m_bEnabled))
-						{
-							if (ModLoader::bSaveRAM)
-							{
-								if (prof->m_bEnabled)
-									prof->Startup();
-								else
-									prof->Cleanup();
-							}
-						}
-
+						if (prof->m_ModInfo)
+							ImGui::Checkbox(prof->m_ModInfo->m_title.c_str(), &prof->m_bEnabled);
+						else
+							ImGui::Checkbox(prof->m_name.c_str(), &prof->m_bEnabled);
 						if (ImGui::BeginDragDropSource())
 						{
-							profileToMove = &prof - ModLoader::Profiles.begin();
-							ImGui::SetDragDropPayload("##ML_MOVE_PROFILE", prof, sizeof(prof));
+							moveFrom = &prof - ModLoader::Profiles.begin();
+							ImGui::SetDragDropPayload("##ML_PROF", &prof, sizeof(ModLoader::ModProfile*));
 
 							ImGui::EndDragDropSource();
 						}
-
 						if (ImGui::BeginDragDropTarget())
 						{
-							const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("##ML_MOVE_PROFILE");
-
-							if (payload)
+							if (const ImGuiPayload* payload = ImGui::AcceptDragDropPayload("##ML_PROF"))
 							{
-								ModLoader::ModProfile* profile = (ModLoader::ModProfile*)payload->Data;
-
-								if (prof != profile)
+								ModLoader::ModProfile* const* pProf = (ModLoader::ModProfile* const*)payload->Data;
+								if (pProf != &prof)
 								{
 									bRequireMoving = true;
-									profileToSwap = &prof - ModLoader::Profiles.begin();
+									moveTo = &prof - ModLoader::Profiles.begin();
 								}
 							}
-
 							ImGui::EndDragDropTarget();
 						}
-
-						if (ImGui::IsItemHovered())
+						if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+							ImGui::OpenPopup("##EXTRA_MOD_INFO_POPUP");
+						if (ImGui::BeginPopup("##EXTRA_MOD_INFO_POPUP"))
 						{
-							if (ImGui::IsMouseClicked(ImGuiMouseButton_Right, false))
+							if (ModLoader::ModExtraInfo* mod = prof->m_ModInfo; mod)
 							{
-								ImGui::OpenPopup("##POPUP_ADV_SETTINGS");
-							}
-							if (prof->m_ModInfo && !prof->m_ModInfo->m_description.empty())
-								ImGui::SetTooltip("%s\n%s\n[%s]", prof->m_ModInfo->m_description.c_str(), prof->m_ModInfo->m_date.c_str(), Utils::getProperSize(prof->m_root.m_filesize).c_str());
-							else
-								ImGui::SetTooltip("<No description given>\n[%s]", Utils::getProperSize(prof->m_root.m_filesize).c_str());
-						}
+								ImGui::InputText("Title", mod->m_title);
+								ImGui::InputText("Author", mod->m_author);
+								ImGui::InputText("Author URL", mod->m_authorURL);
+								ImGui::InputText("Version", mod->m_version);
+								ImGui::InputText("Description", mod->m_description);
+								ImGui::InputText("Date", mod->m_date);
 
-						if (ImGui::BeginPopup("##POPUP_ADV_SETTINGS"))
-						{
-							if (prof->m_ModInfo)
-							{
-								ImGui::InputText("Author", prof->m_ModInfo->m_author);
-								ImGui::InputText("Mod Title", prof->m_ModInfo->m_title);
-								ImGui::InputText("Version", prof->m_ModInfo->m_version);
-								ImGui::InputText("Description", prof->m_ModInfo->m_description);
-								ImGui::InputText("Author URL", prof->m_ModInfo->m_authorURL);
-								ImGui::InputText("Date", prof->m_ModInfo->m_date);
+								ImGui::InputText("Update Server", mod->m_UpdateServer);
+								ImGui::InputText("Save File", mod->m_SaveFile);
 
-								ImGui::PushID("DLLsFields");
-								ImGui::Text(prof->m_ModInfo->m_DLLs.empty() ? "There's no DLLs" : "DLLs:");
-								ImGui::Indent(ImGui::GetTreeNodeToLabelSpacing());
-
-								for (size_t i = 0; i < prof->m_ModInfo->m_DLLs.size(); i++)
+								ImGui::PushID("#DLL_LIST");
+								ImGui::Text(mod->m_DLLs.empty() ? "There are no DLL's specified." : "DLLs:");
+								if (!mod->m_DLLs.empty())
 								{
-									ImGui::PushID(i);
-									ImGui::BulletText("%s", prof->m_ModInfo->m_DLLs[i].c_str());
-									ImGui::SameLine();
-									if (ImGui::SmallButton("-"))
+									ImGui::Indent(ImGui::GetTreeNodeToLabelSpacing());
+									for (size_t i = 0; i < mod->m_DLLs.size(); i++)
 									{
-										prof->m_ModInfo->m_DLLs.erase(prof->m_ModInfo->m_DLLs.begin() + i);
+										ImGui::PushID(i);
+										ImGui::BulletText(mod->m_DLLs[i].c_str());
+										ImGui::SameLine();
+										if (ImGui::SmallButton("-"))
+										{
+											mod->m_DLLs.erase(mod->m_DLLs.begin() + i);
+											ImGui::PopID();
+											break;
+										}
 										ImGui::PopID();
-										break;
 									}
-									ImGui::PopID();
+									ImGui::Unindent(ImGui::GetTreeNodeToLabelSpacing());
 								}
 								if (ImGui::SmallButton("+"))
 								{
-									Explorer_Setup(".DLL\0", &prof->m_root, nullptr,
-										[&](std::vector<FileSystem::File*> files) -> void
+									Explorer_Setup(".DLL\0", &prof->m_root, nullptr, [&](const std::vector<FileSystem::File*>& files)
 										{
+											if (files.empty())
+												return;
+
 											for (auto& file : files)
 											{
-												bool bIsInList = false;
+												if (!file)
+													continue;
 
-												std::for_each(prof->m_ModInfo->m_DLLs.begin(), prof->m_ModInfo->m_DLLs.end(), [&](const Utils::String &dllStr)
-													{
-														if (dllStr == file->getName())
-															bIsInList = true;
-													});
+												Utils::String relPath;
+												relPath = file->m_path.c_str() + prof->m_root.m_path.length();
+												if (relPath.c_str()[0] == '\\')
+													relPath.erase(0, 1);
 
-												if (!bIsInList)
-													prof->m_ModInfo->m_DLLs.push_back(file->getName());
+												prof->m_ModInfo->m_DLLs.push_back(relPath); // ah yes, the `mod` stack value that just there, being useless
 											}
-										});
+										}, Explorer_Flags::EXPRL_CHOOSE_ONLY_FILES);
 								}
-								ImGui::Unindent(ImGui::GetTreeNodeToLabelSpacing());
 								ImGui::PopID();
 
-								ImGui::PushID("IncludeList");
-								ImGui::Text(prof->m_ModInfo->m_Dirs.empty() ? "There's no include directories" : "Include Directories:");
-								ImGui::Indent(ImGui::GetTreeNodeToLabelSpacing());
-								for (size_t i = 0; i < prof->m_ModInfo->m_Dirs.size(); i++)
+								ImGui::PushID("#DIR_LIST");
+								ImGui::Text(mod->m_Dirs.empty() ? "There are no include directories." : "Directories: ");
+								if (!mod->m_Dirs.empty())
 								{
-									ImGui::PushID(i);
-									ImGui::BulletText(prof->m_ModInfo->m_Dirs[i].c_str());
-									ImGui::SameLine();
-									if (ImGui::SmallButton("-"))
+									ImGui::Indent(ImGui::GetTreeNodeToLabelSpacing());
+
+									for (size_t i = 0; i < mod->m_Dirs.size(); i++)
 									{
-										prof->m_ModInfo->m_Dirs.erase(prof->m_ModInfo->m_Dirs.begin() + i);
+										Utils::String& dir = mod->m_Dirs[i];
+										ImGui::PushID(i);
+										ImGui::BulletText(dir.c_str());
+										ImGui::SameLine();
+										if (ImGui::SmallButton("-"))
+										{
+											mod->m_Dirs.erase(mod->m_Dirs.begin() + i);
+											ImGui::PopID();
+											break;
+										}
 										ImGui::PopID();
-										break;
 									}
-									ImGui::PopID();
+
+									ImGui::Unindent(ImGui::GetTreeNodeToLabelSpacing());
 								}
 								if (ImGui::SmallButton("+"))
 								{
-									Explorer_Setup("", &prof->m_root, [&](const std::vector<FileSystem::Directory*>& dirList)
+									Explorer_Setup("", &prof->m_root, [&](const std::vector<FileSystem::Directory*>& dirs)
 										{
-											if (!dirList.empty())
+											if (dirs.empty())
+												return;
+
+											for (auto& dir : dirs)
 											{
-												for (auto& dir : dirList)
-													prof->m_ModInfo->m_Dirs.push_back(dir->getName());
+												if (!dir)
+													continue;
+
+												Utils::String relPath = dir->m_path.c_str() + prof->m_root.m_path.length();
+												if (relPath.c_str()[0] == '\\')
+													relPath.erase(0, 1);
+
+												prof->m_ModInfo->m_Dirs.push_back(relPath);
 											}
 										}, nullptr, EXPRL_CHOOSE_ONLY_DIRECTORY);
 								}
-								ImGui::Unindent(ImGui::GetTreeNodeToLabelSpacing());
 								ImGui::PopID();
-
-								if (prof->m_ModInfo->m_ConfigSchema && ImGui::Button("Configuration"))
-									ImGui::OpenPopup("##PROFILE_CONFIG_EDIT");
-
-								if (ImGui::BeginPopup("##PROFILE_CONFIG_EDIT"))
+								if (mod->m_ConfigSchema && ImGui::Button("Config"))
+									ImGui::OpenPopup("##MOD_CONFIG_POPUP");
+								if (ImGui::BeginPopup("##MOD_CONFIG_POPUP"))
 								{
-									for (auto& group : prof->m_ModInfo->m_ConfigSchema->m_groups)
+									for (auto& group : mod->m_ConfigSchema->m_groups)
 									{
+										ImGui::PushID(&group);
+
 										ImGui::SeparatorText(group.m_displayname.c_str());
-										for (auto& element : group.m_elements)
+
+										if (mod->m_ConfigSchema->m_IniFile == "mod.ini")
 										{
-											ImGui::PushID(&element);
-											Utils::String preview;
-											Utils::String value;
-											for (auto& enm : prof->m_ModInfo->m_ConfigSchema->m_enums)
+											for (auto& elem : group.m_elements)
 											{
-												if (enm.m_TypeIdentifier == element.m_type)
+												ImGui::PushID(&elem);
+
+												Utils::String preview;
+												for (auto& enm : mod->m_ConfigSchema->m_enums)
 												{
-													int inclDirId = -1;
-													if (sscanf(element.m_name.c_str(), "IncludeDir%d", &inclDirId) == 1 && prof->m_ModInfo->m_Dirs[inclDirId] == enm.m_Value)
-														preview = enm.m_DisplayName;
-												}
-											}
-											ImGui::TextUnformatted(element.m_displayname.c_str());
-											ImGui::Spacing();
-											if (ImGui::BeginCombo("", preview.c_str(), ImGuiComboFlags_WidthFitPreview))
-											{
-												for (auto& enm : prof->m_ModInfo->m_ConfigSchema->m_enums)
-												{
-													if (enm.m_TypeIdentifier == element.m_type)
+													if (enm.m_TypeIdentifier == elem.m_type)
 													{
-														bool bSelected = false;
-														for (auto& dir : prof->m_ModInfo->m_Dirs)
-														{
-															if (dir == enm.m_Value)
-																bSelected = true;
-														}
-
-														if (ImGui::Selectable(enm.m_DisplayName.c_str(), bSelected))
-														{
-															int inclDirId = -1;
-															if (sscanf(element.m_name.c_str(), "IncludeDir%d", &inclDirId) == 1)
-																prof->m_ModInfo->m_Dirs[inclDirId] = enm.m_Value;
-														}
-
-														if (bSelected)
-															ImGui::SetItemDefaultFocus();
-
-														if (!enm.m_Description.empty() && ImGui::IsItemHovered())
-															ImGui::SetTooltip(enm.m_Description.c_str());
+														int inclDir = -1;
+														if (sscanf(elem.m_name.c_str(), "IncludeDir%d", &inclDir) == 1 && mod->m_Dirs[inclDir] == enm.m_Value)
+															preview = enm.m_DisplayName;
 													}
 												}
-												ImGui::EndCombo();
+												ImGui::TextUnformatted(elem.m_displayname.c_str());
+												Hint(elem.m_description.c_str());
+												ImGui::Spacing();
+												if (ImGui::BeginCombo("", preview.c_str(), ImGuiComboFlags_WidthFitPreview))
+												{
+													for (auto& enm : mod->m_ConfigSchema->m_enums)
+													{
+														if (enm.m_TypeIdentifier == elem.m_type)
+														{
+															bool bSelected = false;
+															for (auto& dir : prof->m_ModInfo->m_Dirs)
+															{
+																if (dir == enm.m_Value)
+																	bSelected = true;
+															}
+
+															if (ImGui::Selectable(enm.m_DisplayName.c_str(), bSelected))
+															{
+																int inclDirId = -1;
+																if (sscanf(elem.m_name.c_str(), "IncludeDir%d", &inclDirId) == 1)
+																	prof->m_ModInfo->m_Dirs[inclDirId] = enm.m_Value;
+															}
+
+															if (!enm.m_Description.empty())
+																Hint(enm.m_Description.c_str());
+
+															if (bSelected)
+																ImGui::SetItemDefaultFocus();
+														}
+													}
+													ImGui::EndCombo();
+												}
+												ImGui::PopID();
 											}
-											if (!element.m_description.empty() && ImGui::IsItemHovered())
-												ImGui::SetTooltip(element.m_description.c_str());
-											ImGui::PopID();
 										}
+										else
+										{
+											if (!mod->m_ConfigSchema->m_bIniInUse)
+											{
+												FileSystem::File* file = prof->FindFile(mod->m_ConfigSchema->m_IniFile);
+												if (file)
+													new(&mod->m_ConfigSchema->m_ini) IniReader(file->m_path.c_str());
+
+												mod->m_ConfigSchema->m_bIniInUse = true;
+											}
+											for (auto& group : mod->m_ConfigSchema->m_groups)
+											{
+												ImGui::PushID(&group);
+
+												Utils::String preview;
+												for (auto& elem : group.m_elements)
+												{
+													ImGui::PushID(&elem);
+													for (auto& enm : mod->m_ConfigSchema->m_enums)
+													{
+														if (enm.m_TypeIdentifier == elem.m_type)
+														{
+															for (auto& sect : mod->m_ConfigSchema->m_ini)
+															{
+																for (auto& key : sect)
+																	if (key.getValue() == enm.m_Value.c_str())
+																		preview = enm.m_DisplayName;
+															}
+														}
+													}
+													ImGui::TextUnformatted(elem.m_displayname.c_str());
+													Hint(elem.m_description.c_str());
+													ImGui::Spacing();
+													if (ImGui::BeginCombo("", preview.c_str(), ImGuiComboFlags_WidthFitPreview))
+													{
+														for (auto& enm : mod->m_ConfigSchema->m_enums)
+														{
+															if (enm.m_TypeIdentifier == elem.m_type)
+															{
+																bool bSelected = false;
+																for (auto& sect : mod->m_ConfigSchema->m_ini)
+																{
+																	auto key = sect.get(elem.m_name.c_str());
+																	if (key && key->getValue() == enm.m_Value.c_str())
+																		bSelected = true;
+																}
+
+																if (ImGui::Selectable(enm.m_DisplayName.c_str(), bSelected))
+																{
+																	for (auto& sect : mod->m_ConfigSchema->m_ini)
+																	{
+																		auto key = sect.get(elem.m_name.c_str());
+																		if (key)
+																		{
+																			key->getValue() = enm.m_Value.c_str();
+																			mod->m_ConfigSchema->m_ini.WriteString(sect.getSectionName(), key->getKeyName(), enm.m_Value.c_str());
+																		}
+																	}
+																}
+
+																if (!enm.m_Description.empty())
+																	Hint(enm.m_Description.c_str());
+
+																if (bSelected)
+																	ImGui::SetItemDefaultFocus();
+															}
+														}
+														ImGui::EndCombo();
+													}
+													ImGui::PopID();
+												}
+
+												ImGui::PopID();
+											}
+										}
+										ImGui::PopID();
 									}
+
 									ImGui::EndPopup();
 								}
 								if (ImGui::Button("Save"))
 								{
-									FileSystem::File* mod = prof->FindFile("mod.ini");
-									prof->m_ModInfo->Save(mod);
-
-									if (!mod)
+									FileSystem::File* file = prof->FindFile("mod.ini");
+									if (file) mod->Save(file);
+									else
 									{
-										prof->m_root.m_files.push_back({ (prof->m_root.m_path / "mod.ini").c_str()});
-										
-										mod = prof->FindFile("mod.ini");
-										prof->m_ModInfo->Save(mod);
+										FileSystem::File file("mod.ini", 0);
+										mod->Save(&file);
 									}
 								}
 								if (ImGui::Button("Delete"))
 								{
-									delete prof->m_ModInfo;
-									prof->m_ModInfo = nullptr;
+									FileSystem::File* file = prof->FindFile("mod.ini");
+									if (file)
+									{
+										remove(file->m_path.c_str());
+										for (auto it = prof->m_root.m_files.begin(); it != prof->m_root.m_files.end(); ++it)
+										{
+											if (&(*it) == file)
+											{
+												prof->m_root.m_files.erase(it);
+												break;
+											}
+										}
 
-									FileSystem::File* mod = prof->FindFile("mod.ini");
-
-									if (mod)
-										remove(mod->m_path.c_str());
+										delete prof->m_ModInfo;
+										prof->m_ModInfo = nullptr;
+									}
 								}
 							}
 							else
 							{
-								ImGui::Text("This mod doesn't have any information.");
-								if (ImGui::Button("Add"))
+								ImGui::Text("No additional info available for this mod.\nWould you like to create and provide additional info for this mod?");
+								if (ImGui::Button("Create Mod Info"))
 								{
 									prof->m_ModInfo = new ModLoader::ModExtraInfo();
 
-									if (FILE* file = fopen((prof->m_root.m_path / "mod.ini").c_str(), "w"); file)
+									if (FILE* file = fopen((prof->m_root.m_path / "mod.ini").c_str(), "w"))
 										fclose(file);
+
+									prof->m_root.m_files.push_back(FileSystem::File((prof->m_root.m_path / "mod.ini").c_str(), 0));
 								}
 							}
-
 							ImGui::EndPopup();
 						}
-
+						ImGui::TableNextColumn();
 						if (prof->m_ModInfo)
+							ImGui::Text(prof->m_ModInfo->m_author.c_str());
+						else
+							ImGui::Text("");
+						if (ImGui::IsItemClicked())
 						{
-							if (!prof->m_ModInfo->m_author.empty())
-							{
-								ImGui::TableNextColumn();
-								ImGui::TextUnformatted(prof->m_ModInfo->m_author.c_str());
-								if (!prof->m_ModInfo->m_authorURL.empty() && ImGui::IsItemHovered() && ImGui::IsItemClicked(ImGuiMouseButton_Left))
-									ShellExecute(0, "open", prof->m_ModInfo->m_authorURL.c_str(), nullptr, nullptr, 0);
-							}
+							if (prof->m_ModInfo)
+								ThreadWork::AddThread(new cThread([](cThread*, LPVOID pParam)
+									{
+										ShellExecuteA(0, "open", ((ModLoader::ModProfile*)pParam)->m_ModInfo->m_authorURL.c_str(), NULL, NULL, 0);
+									}, prof));
 						}
-
+						ImGui::TableNextColumn();
+						if (prof->m_ModInfo)
+							ImGui::Text(prof->m_ModInfo->m_version.c_str());
+						else
+							ImGui::Text("");
 						ImGui::PopID();
 					}
+					
+					ImGui::EndTable();
+
 					if (bRequireMoving)
 					{
-						ModLoader::ModProfile*& with = ModLoader::Profiles[profileToSwap];
-						ModLoader::ModProfile*& element = ModLoader::Profiles[profileToMove];
-						std::swap(with, element);
-						std::swap(with->m_place, element->m_place);
+						if (moveTo != -1 && moveFrom != -1 && moveTo != moveFrom)
+						{
+							ModLoader::ModProfile* prof = ModLoader::Profiles[moveFrom];
+
+							ModLoader::Profiles.erase(ModLoader::Profiles.begin() + moveFrom);
+							ModLoader::Profiles.insert(ModLoader::Profiles.begin() + moveTo, prof);
+						}
+
 						bRequireMoving = false;
+						moveTo = moveFrom = -1;
 					}
-					ImGui::EndTable();
 				}
-				ImGui::EndTabItem();
 			}
-			
-			if (ImGui::BeginTabItem("Settings"))
-			{
-				GUIHotkey.Draw("Menu Hotkey");
-				ImGui::Checkbox("Check for updates", &Updater::bEnabled);
-				Hint("Will automatically check updates when you're launching the game.");
-				ImGui::Checkbox("Enable mods", &ModLoader::bLoadMods);
-				ImGui::Checkbox("Enable script loading", &ModLoader::bLoadScripts);
-				ImGui::Checkbox("Enable file loading", &ModLoader::bLoadFiles);
-				if (ImGui::Checkbox("Save RAM", &ModLoader::bSaveRAM))
-				{
-					if (ModLoader::bSaveRAM)
-					{
-						for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
-						{
-							if (prof->m_bEnabled)
-								prof->Startup();
-							else
-								prof->Cleanup();
-						}
-					}
-					else
-					{
-						for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
-						{
-							prof->Startup(); // There's already a check if mod was started, no need to worry about it reading everything again
-						}
-					}
-				}
-				Hint("If enabled, will not load mods that are not used in the current scene.\n"
-					 "If disabled, will load all mods at once, which may cause RAM usage to increase.");
-				if (ImGui::Checkbox("Enable logging", &Logger::bEnabled))
-				{
-					if (!Logger::bEnabled)
-					{
-						remove(Logger::LogFilePath);
-						Logger::Close();
-					}
-					else
-					{
-						Logger::Open();
-					}
-				}
-				Hint("Helps developers to find issues that were caused with certain mods.\n"
-					 "If a certain mod causes a crash, and you have this option disabled, enable it in ini file.");
-				ImGui::Checkbox("Flush Immediately", &Logger::bFlushImmediately);
-				HelpTip("Writes everything in the log immediately, if disabled, will write everything after game exit.");
-				if (ImGui::Button("Check Updates"))
-				{
-					Updater::hUpdateThread = CreateThread(nullptr, 0, [](LPVOID) -> DWORD
-						{
-							bOpenUpdaterMB = Updater::CheckForOnce() && Updater::eUpdateStatus == Updater::UPDATE_STATUS_AVAILABLE;
-
-							return 0;
-						}, nullptr, 0, nullptr);
-				}
-				ImGui::EndTabItem();
-			}
-
-			if (ImGui::BeginTabItem("About"))
-			{
-				// bla bla bla bla
-				ImGui::Text("Mod Loader %s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion).c_str());
-				if (Updater::eUpdateStatus == Updater::UPDATE_STATUS_AVAILABLE)
-				{
-					ImGui::SameLine();
-					ImGui::TextColored(ImVec4(0.f, 1.f, 0.f, 1.f), "New version is available");
-				}
-				if (ImGui::Button("YouTube", ImVec2(100, 20)))
-					ShellExecute(0, "open", "https://www.youtube.com/@frouk3378", NULL, NULL, 0);
-				ImGui::SameLine();
-				if (ImGui::Button("GitHub", ImVec2(100, 20)))
-					ShellExecute(0, "open", "https://github.com/Frouk3", NULL, NULL, 0);
-				gui::TextCentered("Mod Loader made by Frouk");
-				gui::TextCentered("If you like my work, consider donating :)");
-				ImGui::Text("Donations(to author):");
-				if (ImGui::Button("Donatello"))
-					ShellExecute(0, "open", "https://donatello.to/Frouk3", NULL, NULL, 0);
-				ImGui::SameLine();
-				if (ImGui::Button("PayPal"))
-					ShellExecute(0, "open", "https://paypal.me/MykhailoKytsun", NULL, NULL, 0);
-				ImGui::Text("Credits:");
-				ImGui::BulletText("ImGui (%s) : ocornut", ImGui::GetVersion());
-				ImGui::BulletText("MinHook : TsudaKageyu");
-				gui::TextCentered("And also, thanks to other people that helped me");
-				ImGui::EndTabItem();
-			}
-
-			ImGui::EndTabBar();
+			ImGui::EndTabItem();
 		}
-		ImGui::End();
+		if (ImGui::BeginTabItem("Settings"))
+		{
+			gui::GUIHotkey.Draw("Menu Hotkey");
+			ImGui::SeparatorText("Mod Loader");
+			ImGui::Checkbox("Load mods", &ModLoader::bLoadMods);
+			ImGui::Checkbox("Load files", &ModLoader::bLoadFiles);
+			ImGui::Checkbox("Load scripts", &ModLoader::bLoadScripts);
+			ImGui::Checkbox("Save RAM", &ModLoader::bSaveRAM);
+			HelpTip("If enabled, it will load the mod despite being disabled\nNo need to worry since these mods will not be picked for mod loading");
+			if (ImGui::Button("Save Config"))
+			{
+				Updater::SaveConfig();
+				Logger::SaveConfig();
+				ModLoader::Save();
 
-		DrawMiniExplorer();
+				gui::GUIHotkey.Save();
+			}
+			ImGui::SameLine();
+			if (ImGui::Button("Load Config"))
+			{
+				Updater::LoadConfig();
+				Logger::LoadConfig();
+				ModLoader::Load();
+
+				gui::GUIHotkey.Load();
+			}
+			ImGui::SeparatorText("Log");
+			ImGui::Checkbox("Enable Logging", &Logger::bEnabled);
+			ImGui::Checkbox("Flush Log to File Immediately", &Logger::bFlushImmediately);
+			ImGui::SeparatorText("Updater");
+			ImGui::Checkbox("Enable Updater", &Updater::bEnabled);
+			if (ImGui::Button("Check for Updates Now"))
+				Updater::CheckSync();
+			ImGui::EndTabItem();
+		}
+		if (ImGui::BeginTabItem("About"))
+		{
+			ImGui::Text("Mod Loader %s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion).c_str());
+			if (Updater::eUpdateStatus == Updater::UPDATE_STATUS_AVAILABLE)
+			{
+				ImGui::SameLine();
+				ImGui::TextColored(ImVec4(0.f, 1.f, 0.f, 1.f), "New version is available");
+			}
+			if (ImGui::Button("YouTube", ImVec2(100, 20)))
+				ShellExecute(0, "open", "https://www.youtube.com/@frouk3378", NULL, NULL, 0);
+			ImGui::SameLine();
+			if (ImGui::Button("GitHub", ImVec2(100, 20)))
+				ShellExecute(0, "open", "https://github.com/Frouk3", NULL, NULL, 0);
+			gui::TextCentered("Mod Loader made by Frouk");
+			gui::TextCentered("If you like my work, consider donating :)");
+			ImGui::Text("Donations(to author):");
+			if (ImGui::Button("Donatello"))
+				ShellExecute(0, "open", "https://donatello.to/Frouk3", NULL, NULL, 0);
+			ImGui::SameLine();
+			if (ImGui::Button("PayPal"))
+				ShellExecute(0, "open", "https://paypal.me/MykhailoKytsun", NULL, NULL, 0);
+			ImGui::Text("Credits:");
+			ImGui::BulletText("ImGui (%s) : ocornut", ImGui::GetVersion());
+			ImGui::BulletText("MinHook : TsudaKageyu");
+			gui::TextCentered("And also, thanks to other people that helped me");
+			ImGui::EndTabItem();
+		}
+
+		ImGui::EndTabBar();
 	}
+	ImGui::End();
+
+	DrawMiniExplorer();
 }

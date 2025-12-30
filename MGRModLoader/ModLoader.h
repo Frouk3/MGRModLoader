@@ -7,6 +7,7 @@
 #include <functional>
 #include <ini.h>
 #include "Utils.h"
+#include "Timer.hpp"
 #pragma warning(disable : 4996)
 
 #define MAX_MODS_PROFILE 1024
@@ -55,7 +56,7 @@ namespace FileSystem
 	struct Directory
 	{
 		Utils::String m_path;
-		UINT64 m_filesize;
+		uint64_t m_filesize;
 		std::vector<File> m_files;
 		std::vector<Directory*> m_subdirs; // to pointer since we have problems with further directories
 		Directory* m_parent;
@@ -81,6 +82,14 @@ namespace FileSystem
 			clear();
 		}
 
+		enum eScanFlags : unsigned int
+		{
+			SCANFLAG_NONE = 0,
+			SCANFLAG_FILES = 1 << 0,
+			SCANFLAG_DIRECTORIES = 1 << 1,
+			SCANFLAG_ALL = SCANFLAG_FILES | SCANFLAG_DIRECTORIES
+		};
+
 		bool empty() const { return m_files.empty() && m_subdirs.empty(); }
 
 		void FileWalk(const std::function<void(File&)>& cb);
@@ -88,9 +97,9 @@ namespace FileSystem
 		void clear();
 		void calculateDirectorySize();
 		const char* getName();
-		void scanFiles(bool bRecursive = false, const bool bInSubFolder = false, unsigned int flags = 3);
+		void scanFiles(bool bRecursive = false, const bool bInSubFolder = false, unsigned int flags = SCANFLAG_ALL);
 
-		void Dump(const Utils::String& extPrintLn);
+		void Dump(const Utils::String& indent);
 
 		File *FindFile(const Utils::String& filepath);
 		Directory* FindSubDir(const Utils::String& path);
@@ -103,9 +112,130 @@ namespace FileSystem
 	void DirectoryWalkRecursive(const std::function<void(Directory&)>& cb, const char* path); // Static function to go through all directories in the path and subfolders
 
 	bool PathExists(const char* path);
-}
 
-#define LOGGER_DEBUG 0
+	enum eReadId { READID_INVALID = 0 };
+
+	inline unsigned int m_CycleReadId = 1;
+
+	inline unsigned int CycleReadId() { return m_CycleReadId++; }
+
+	class cReader
+	{
+	public:
+		enum RNO_MOVE // SHHH, I'm a Platinum Games Developer lmao
+		{
+			MOVE_NONE = 0,
+			MOVE_READ_ALLOC, // If we don't have filedata to read into, allocate it
+			MOVE_READ_START,
+			MOVE_READ_WAIT,
+			MOVE_CLEANUP_START,
+			MOVE_CLEANUP_END,
+			MOVE_FILE_VALID,
+			MOVE_FILE_INVALID
+		};
+
+		enum eReadFlags
+		{
+			READFLAG_NONE = 0,
+			READFLAG_ASYNC = 1 << 0,
+			READFLAG_ALLOC_BACK = 1 << 1,
+			READFLAG_OWNS_ALLOC = 1 << 2
+		};
+
+		eReadId m_readId;
+		RNO_MOVE m_rno;
+
+		File m_file;
+		FILE* m_fp;
+		void* m_filedata;
+		unsigned int m_flags;
+		size_t m_buffersize;
+		size_t m_bufferpos;
+
+		bool m_bClaimedByThread = false; // Whether the reader is being processed by a thread
+		int m_threadIndex = -1;
+
+		int m_WaitCount = 0;
+
+		CTimer m_Timer;
+
+		cReader();
+		cReader(const char* path, void* filedata, size_t m_buffersize);
+		~cReader();
+
+		bool open(const char* path);
+		void close();
+
+		void seek(size_t position);
+		size_t tell();
+		size_t read(); // async
+		bool isOpen() const { return m_fp != nullptr; }
+
+		void move();
+		void startReadAsync();
+
+		bool isComplete() const;
+		bool isCanceled() const;
+		bool isAlive() const;
+
+		void wait();
+
+		static constexpr unsigned int ChunkSize = 64 * 1024;
+	private:
+		int m_refCount = 0;
+		int m_useCount = 0;
+
+		bool moveNone();
+		bool moveReadAlloc();
+		bool moveReadStart();
+		bool moveReadEnd();
+		bool moveCleanupStart();
+		bool moveCleanupEnd();
+		bool moveFileValid();
+		bool moveFileInvalid();
+	public:
+		int getRefCount() const { return m_refCount; }
+		void addRef() { m_refCount++; }
+		void release();
+
+		int getUseCount() const { return m_useCount; }
+		void addUse() { m_useCount++; }
+		void releaseUse() { m_useCount--; }
+	};
+
+	inline Hw::cFactoryFixed<cReader, 4> m_ReaderFactory;
+	inline Hw::cCriticalSection m_ReaderFactoryCriticalSection;
+
+	inline lib::StaticArray<HANDLE, 6> m_ReaderThreads; // 6 threads should be enough
+
+	bool Init(unsigned int maxReaders);
+	void Shutdown();
+
+	void UpdateReaders();
+
+	eReadId ReadAsync(const char* path, void* filedata, size_t buffersize);
+	bool ReadSync(const char* path, void* filedata, size_t buffersize);
+
+	eReadId ReadAsyncAlloc(const char* path, void **filedata, size_t* outFileSize, unsigned int flags = 0);
+	bool ReadSyncAlloc(const char* path, void **filedata, size_t* outFileSize, unsigned int flags = 0);
+
+	bool IsReaderAlive(eReadId reader);
+	bool IsReadCanceled(eReadId reader);
+	void CancelRead(eReadId reader);
+	void* GetReadFileData(eReadId reader);
+
+	bool WaitForRead(eReadId reader);
+	bool IsReadComplete(eReadId reader);
+	void AddRef(eReadId reader);
+	void AddUse(eReadId reader);
+	void ReleaseUse(eReadId reader);
+	void Release(eReadId reader);
+
+	bool HasActiveReader(const char* path);
+	eReadId GetActiveReader(const char* path);
+
+	void RemoveDirectoryRecursively(const char* path);
+}
 
 namespace Logger
 {
@@ -113,11 +243,9 @@ namespace Logger
 	inline bool bFlushImmediately = false;
 	inline bool bEnabled = true;
 	inline char LogFilePath[MAX_PATH] = { 0 };
-#if LOGGER_DEBUG
-	inline std::vector<std::pair<Utils::String, float>> LatestLog;
-#endif
 
 	void Init();
+	void Shutdown();
 
 	void LoadConfig();
 	void SaveConfig();
@@ -132,12 +260,13 @@ namespace Logger
 	void vPrintf(const char* format, va_list args);
 	void PrintfLn(const char* format, ...); // New line escape and the end
 	void Printf(const char* format, ...); // Full control of the line + without time or anything related to "Mod Loader"
+	void PrintfNoTime(const char* format, ...); // Without time info
 }
 
 namespace Updater
 {
 	inline bool bEnabled = true;
-	inline constexpr double fCurrentVersion = 3.1;
+	inline constexpr double fCurrentVersion = 3.2;
 	inline double fLatestVersion = -1.0;
 	inline HANDLE hUpdateThread;
 	enum UpdateStatus : unsigned int
@@ -146,6 +275,7 @@ namespace Updater
 		UPDATE_STATUS_FAILED,
 		UPDATE_STATUS_AVAILABLE,
 		UPDATE_STATUS_LATEST_INSTALLED,
+		UPDATE_STATUS_NO_INTERNET,
 		UPDATE_STATUS_UNEXPECTED // Hit the end without any status
 	};
 
@@ -153,8 +283,8 @@ namespace Updater
 
 	void Init();
 
-	bool CheckForUpdates();
-	bool CheckForOnce();
+	bool CheckAsync();
+	bool CheckSync();
 	void LoadConfig();
 	void SaveConfig();
 }
@@ -261,6 +391,8 @@ namespace ModLoader
 			std::vector<Group> m_groups;
 			std::vector<Enum> m_enums;
 			Utils::String m_IniFile;
+			bool m_bIniInUse = false;
+			IniReader m_ini;
 
 			ConfigSchema() = default;
 
@@ -284,6 +416,7 @@ namespace ModLoader
 			m_DLLs.clear();
 			m_CodeFiles.clear();
 			m_Dirs.clear();
+			m_BoundDirectories.clear();
 
 			if (m_ConfigSchema)
 			{
@@ -340,10 +473,10 @@ namespace ModLoader
 
 		void Startup();
 		void Shutdown();
-		void ScanFiles();
+		// void ScanFiles();
 		void Save(IniReader &ini);
 		void Load(IniReader &ini);
-		void Cleanup();
+		// void Cleanup();
 
 		void Restart();
 
