@@ -1,13 +1,66 @@
 #include <Events.h>
 #include "gui.h"
 #include "imgui/imgui.h"
+#include "imgui/imgui_impl_dx9.h"
 #include "ModLoader.h"
 #include <GameMenuStatus.h>
 #include "FilesTools.hpp"
 #include <Hooks.h>
 #include "ThreadWork.hpp"
+#include "licenses.h"
+
+bool bLockInput = false;
 
 Hw::cKeyboardState g_KeyboardState;
+
+struct Link
+{
+	std::string m_Name;
+	std::string m_URL;
+};
+
+std::vector<Link> g_Socials;
+std::vector<Link> g_Donations;
+
+void InitLinks()
+{
+	const char* szURL = "https://raw.githubusercontent.com/Frouk3/mod_about_links/main/links";
+
+	std::vector<char> data = Utils::FetchURL(szURL);
+	if (data.empty())
+	{
+		LOGERROR("Failed to fetch about links. No internet connection?");
+		return;
+	}
+	IniReader ini;
+	ini.ParseData(data.data());
+
+	auto ParseSections = [&](const char* sectionName, std::vector<Link>& container)
+		{
+			IniReader::IniSection* section = ini.get(sectionName);
+
+			if (!section)
+				return;
+
+			for (int i = 0; ; i++)
+			{
+				Utils::String root = Utils::format("Link[%d]", i);
+				IniReader::IniSection::IniKey* key = section->get((root + ".Name").c_str());
+				IniReader::IniSection::IniKey* urlKey = section->get((root + ".URL").c_str());
+
+				if (!key || !urlKey)
+					break;
+
+				Link link;
+				link.m_Name = key->getValue();
+				link.m_URL = key->getValue();
+				container.push_back(link);
+			}
+		};
+
+	ParseSections("Social", g_Socials);
+	ParseSections("Donations", g_Donations);
+}
 
 bool bKeyboardInputAvailable = true;
 
@@ -21,7 +74,7 @@ HRESULT WINAPI hkGetDeviceState(LPDIRECTINPUTDEVICE8W pThis, DWORD lpdwData, LPV
 	if (!ModLoader::bInit)
 		return oGetDeviceState(pThis, lpdwData, pBuffer);
 
-	if (gui::GUIHotkey.m_bToggle)
+	if (bLockInput)
 	{
 		if (pBuffer == &g_KeyHoldState)
 			return oGetDeviceState(pThis, lpdwData, pBuffer);
@@ -365,7 +418,15 @@ class ModLoaderPlugin
 public:
 	static inline void InitGUI()
 	{
-		Events::OnPresent.before += gui::OnEndScene;
+		Events::OnPresent.before += []()
+			{
+				gui::OnEndScene();
+				if (Hw::GraphicDevice::m_pDevice->BeginScene() == S_OK)
+				{
+					gui::Render();
+					Hw::GraphicDevice::m_pDevice->EndScene(); // It shouldn't alter mods that are based from mgr-plugin-sdk, but I do know that there are some "reshade" mods that might hook into EndScene and get called more than once, creating [1, infinite] render times
+				}
+			};
 		Events::OnDeviceReset.before += gui::OnReset::Before;
 		Events::OnDeviceReset.after += gui::OnReset::After;
 	}
@@ -387,9 +448,9 @@ public:
 		if (!FileSystem::PathExists((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str()))
 			CreateDirectoryA((Utils::String(ModLoader::ModLoaderPath) / "repacked").c_str(), nullptr);
 
-		for (ModLoader::ModProfile *&prof : ModLoader::Profiles)
+		for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 		{
-			prof->FileWalk([&](FileSystem::File &file)
+			prof->FileWalk([&](FileSystem::File& file)
 				{
 					if (const char* chr = strrchr(file.getName(), '.'); !stricmp(chr, ".cpk"))
 						++CriWare::iAvailableCPKs;
@@ -400,7 +461,7 @@ public:
 
 		gui::GUIHotkey.Load();
 
-		Events::OnGameStartupEvent.after += [](cGame *)
+		Events::OnGameStartupEvent.after += [](cGame*)
 			{
 				ThreadWork::AddThread(new cThread([](cThread* pThread, LPVOID pParam)
 					{
@@ -410,6 +471,8 @@ public:
 						injector::WriteMemory<void*>((void**)&vftable[9], (void*)hkGetDeviceState, true);
 
 						LOG("Input hook installed.");
+
+						InitLinks();
 					}, nullptr));
 
 				Hw::KeyboardManager::InitState(g_KeyboardState);
@@ -490,7 +553,10 @@ public:
 
 				ThreadWork::UpdateThreads();
 				if (g_GameMenuStatus == InMenu) gui::GUIHotkey.Update();
-				else gui::GUIHotkey.m_bToggle = false; // force close GUI when not in menu, and make sure that input is available
+				else
+				{
+					gui::GUIHotkey.m_bToggle = false; // force close GUI when not in menu, and make sure that input is available
+				}
 				FileSystem::UpdateReaders();
 			};
 
@@ -523,6 +589,7 @@ public:
 				ModLoader::Shutdown();
 				gui::GUIHotkey.Save();
 				FileSystem::Shutdown();
+				gui::Shutdown();
 			};
 
 		Events::OnMainCleanupEvent.after += []()
@@ -545,10 +612,171 @@ public:
 	}
 } gModLoaderPlugin;
 
+int iMouseShowReqCount = 0;
+bool bUserNotice = false;
+bool bManualUpdateCheck = false;
+
+void SetUpdatePopup()
+{
+	ImGui::PushID("UpdatePopup");
+	switch (Updater::eUpdateStatus)
+	{
+	case Updater::UPDATE_STATUS_NONE:
+		break;
+	case Updater::UPDATE_STATUS_LATEST_INSTALLED:
+	{
+		if (!bUserNotice && bManualUpdateCheck)
+		{
+			ImGui::OpenPopup("##Latest");
+
+			++iMouseShowReqCount;
+			bUserNotice = true;
+		}
+		break;
+	}
+	case Updater::UPDATE_STATUS_AVAILABLE:
+	{
+		if (!bUserNotice)
+		{
+			ImGui::OpenPopup("##UpdateAvailable");
+			++iMouseShowReqCount;
+			bUserNotice = true;
+		}
+		break;
+	}
+	case Updater::UPDATE_STATUS_FAILED:
+	{
+		if (!bUserNotice)
+		{
+			ImGui::OpenPopup("##UpdateFailed");
+			++iMouseShowReqCount;
+			bUserNotice = true;
+		}
+		break;
+	}
+	case Updater::UPDATE_STATUS_UNEXPECTED:
+	{
+		if (!bUserNotice)
+		{
+			ImGui::OpenPopup("##UpdateUnexpected");
+			++iMouseShowReqCount;
+			bUserNotice = true;
+		}
+		break;
+	}
+	case Updater::UPDATE_STATUS_NO_INTERNET:
+	{
+		if (!bUserNotice)
+		{
+			ImGui::OpenPopup("##NoInternet");
+			++iMouseShowReqCount;
+			bUserNotice = true;
+		}
+		break;
+	}
+	default:
+		break;
+	}
+
+	unsigned int flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse;
+	ImVec2 buttonSize = ImVec2(100, 0);
+
+	if (ImGui::BeginPopupModal("##Latest", nullptr, flags))
+	{
+		ImGui::Text("You have the latest version of Mod Loader installed.");
+		if (ImGui::Button("OK", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::EndPopup();
+	}
+
+	if (ImGui::BeginPopupModal("##UpdateAvailable", nullptr, flags))
+	{
+		ImGui::Text("New version of Mod Loader is available!\n\nCurrent version: %s\nLatest version: %s", Utils::FloatStringNoTralingZeros(Updater::fCurrentVersion).c_str(), Utils::FloatStringNoTralingZeros(Updater::fLatestVersion).c_str());
+
+		if (ImGui::Button("OK", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Cancel", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::SameLine();
+		if (ImGui::Button("Visit website", buttonSize))
+		{
+			ThreadWork::AddThread([](cThread*, LPVOID) -> void
+				{
+					ShellExecuteA(NULL, "open", "https://www.nexusmods.com/metalgearrisingrevengeance/mods/650", NULL, NULL, SW_SHOWNORMAL);
+
+				}, nullptr);
+			--iMouseShowReqCount;
+			ImGui::CloseCurrentPopup();
+		}
+		ImGui::EndPopup();
+	}
+
+	if (ImGui::BeginPopupModal("##UpdateFailed", nullptr, flags))
+	{
+		ImGui::Text("Failed to check for updates. Please try again later.");
+		if (ImGui::Button("OK", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::EndPopup();
+	}
+
+	if (ImGui::BeginPopupModal("##UpdateUnexpected", nullptr, flags))
+	{
+		ImGui::Text("An unexpected error occurred while checking for updates. Please try again later.");
+		if (ImGui::Button("OK", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::EndPopup();
+	}
+
+	if (ImGui::BeginPopupModal("##NoInternet", nullptr, flags))
+	{
+		ImGui::Text("No internet connection. Please check your connection and try again.");
+		if (ImGui::Button("OK", buttonSize))
+		{
+			ImGui::CloseCurrentPopup();
+			--iMouseShowReqCount;
+		}
+		ImGui::EndPopup();
+	}
+
+	ImGui::PopID();
+}
+
 void gui::RenderWindow()
 {
-	if (gui::GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF)
+	if (g_GameMenuStatus == InMenu && gui::GUIHotkey.GetHotkeyType() == Hotkey::HT_OFF)
 		gui::GUIHotkey.m_bToggle = true;
+
+	static bool bToggleGuard = false;
+	if (bToggleGuard != gui::GUIHotkey.m_bToggle)
+	{
+		if (gui::GUIHotkey.m_bToggle)
+			++iMouseShowReqCount;
+		else
+			--iMouseShowReqCount;
+
+		bToggleGuard = gui::GUIHotkey.m_bToggle;
+	}
+
+	ImGui::GetIO().MouseDrawCursor = iMouseShowReqCount > 0;
+	bLockInput = iMouseShowReqCount > 0;
+
+	SetUpdatePopup();
 
 	if (!gui::GUIHotkey.m_bToggle)
 		return;
@@ -561,6 +789,24 @@ void gui::RenderWindow()
 		flags &= ~ImGuiWindowFlags_NoCollapse;
 
 	ImGui::Begin("Mod Loader", &gui::GUIHotkey.m_bToggle, flags);
+	if (ImGui::Button("Save Config"))
+	{
+		Updater::SaveConfig();
+		Logger::SaveConfig();
+		ModLoader::Save();
+
+		gui::GUIHotkey.Save();
+	}
+	ImGui::SameLine();
+	if (ImGui::Button("Load Config"))
+	{
+		Updater::LoadConfig();
+		Logger::LoadConfig();
+		ModLoader::Load();
+
+		gui::GUIHotkey.Load();
+	}
+	ImGui::Separator();
 	if (ImGui::BeginTabBar("MLTabBar"))
 	{
 		if (ImGui::BeginTabItem("Mods"))
@@ -619,7 +865,7 @@ void gui::RenderWindow()
 							if (prof->m_ModInfo && !prof->m_ModInfo->m_title.empty())
 								searchTarg = prof->m_ModInfo->m_title;
 
-							if (!searchBarContent.empty() && !strstr(searchTarg.lower(), Utils::strlow(searchBarContent.c_str()).c_str()))
+							if (!Utils::contains(searchTarg.c_str(), searchBarContent.c_str(), true)) // do case sensitive search
 								continue;
 						}
 						ImGui::TableNextRow();
@@ -958,7 +1204,7 @@ void gui::RenderWindow()
 							ImGui::Text("");
 						ImGui::PopID();
 					}
-					
+
 					ImGui::EndTable();
 
 					if (bRequireMoving)
@@ -987,30 +1233,17 @@ void gui::RenderWindow()
 			ImGui::Checkbox("Load scripts", &ModLoader::bLoadScripts);
 			ImGui::Checkbox("Save RAM", &ModLoader::bSaveRAM);
 			HelpTip("If enabled, it will load the mod despite being disabled\nNo need to worry since these mods will not be picked for mod loading");
-			if (ImGui::Button("Save Config"))
-			{
-				Updater::SaveConfig();
-				Logger::SaveConfig();
-				ModLoader::Save();
-
-				gui::GUIHotkey.Save();
-			}
-			ImGui::SameLine();
-			if (ImGui::Button("Load Config"))
-			{
-				Updater::LoadConfig();
-				Logger::LoadConfig();
-				ModLoader::Load();
-
-				gui::GUIHotkey.Load();
-			}
 			ImGui::SeparatorText("Log");
 			ImGui::Checkbox("Enable Logging", &Logger::bEnabled);
 			ImGui::Checkbox("Flush Log to File Immediately", &Logger::bFlushImmediately);
 			ImGui::SeparatorText("Updater");
 			ImGui::Checkbox("Enable Updater", &Updater::bEnabled);
 			if (ImGui::Button("Check for Updates Now"))
+			{
+				bUserNotice = false;
 				Updater::CheckSync();
+				bManualUpdateCheck = true;
+			}
 			ImGui::EndTabItem();
 		}
 		if (ImGui::BeginTabItem("About"))
@@ -1021,23 +1254,58 @@ void gui::RenderWindow()
 				ImGui::SameLine();
 				ImGui::TextColored(ImVec4(0.f, 1.f, 0.f, 1.f), "New version is available");
 			}
-			if (ImGui::Button("YouTube", ImVec2(100, 20)))
-				ShellExecute(0, "open", "https://www.youtube.com/@frouk3378", NULL, NULL, 0);
-			ImGui::SameLine();
-			if (ImGui::Button("GitHub", ImVec2(100, 20)))
-				ShellExecute(0, "open", "https://github.com/Frouk3", NULL, NULL, 0);
-			gui::TextCentered("Mod Loader made by Frouk");
-			gui::TextCentered("If you like my work, consider donating :)");
-			ImGui::Text("Donations(to author):");
-			if (ImGui::Button("Donatello"))
-				ShellExecute(0, "open", "https://donatello.to/Frouk3", NULL, NULL, 0);
-			ImGui::SameLine();
-			if (ImGui::Button("PayPal"))
-				ShellExecute(0, "open", "https://paypal.me/MykhailoKytsun", NULL, NULL, 0);
-			ImGui::Text("Credits:");
-			ImGui::BulletText("ImGui (%s) : ocornut", ImGui::GetVersion());
-			ImGui::BulletText("MinHook : TsudaKageyu");
-			gui::TextCentered("And also, thanks to other people that helped me");
+
+			ImGui::SeparatorText("Socials");
+			if (g_Socials.empty())
+			{
+				ImGui::TextDisabled("Not available.");
+			}
+			else
+			{
+				for (int i = 0; i < (int)g_Socials.size(); i++)
+				{
+					if (ImGui::Button(g_Socials[i].m_Name.c_str()))
+					{
+						ThreadWork::AddThread([](cThread*, LPVOID pParam)
+							{
+								ShellExecuteA(0, "open", ((Link*)pParam)->m_URL.c_str(), NULL, NULL, SW_SHOWNORMAL);
+							}, &g_Socials[i]);
+					}
+					if (i < (int)g_Socials.size() - 1)
+						ImGui::SameLine();
+				}
+			}
+			ImGui::SeparatorText("Donations");
+			if (g_Donations.empty())
+			{
+				ImGui::TextDisabled("Not available.");
+
+			}
+			else
+			{
+				for (int i = 0; i < (int)g_Donations.size(); i++)
+				{
+					if (ImGui::Button(g_Donations[i].m_Name.c_str()))
+					{
+						ThreadWork::AddThread([](cThread*, LPVOID pParam)
+							{
+								ShellExecuteA(0, "open", ((Link*)pParam)->m_URL.c_str(), NULL, NULL, SW_SHOWNORMAL);
+							}, &g_Donations[i]);
+					}
+					if (i < (int)g_Donations.size() - 1)
+						ImGui::SameLine();
+				}
+			}
+			ImGui::SeparatorText("License");
+
+			for (std::pair<const char*, const char*> pair : { std::pair("ImGui", g_ImGuiLicense), {"HDE x86", g_HdeLicense86 }, {"HDE x64", g_HdeLicense64 } })
+			{
+				if (ImGui::CollapsingHeader(pair.first))
+				{
+					ImGui::TextWrapped(pair.second);
+				}
+			}
+
 			ImGui::EndTabItem();
 		}
 

@@ -21,10 +21,10 @@ CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait
 		{
 			// LOG("[FILEREAD] Finished here reading %s", pThis->m_Path.c_str());
 			FileSystem::Release(reqList[pThis]); // Release reader
-			
+
 			if (FileSystem::IsReaderAlive(reqList[pThis]))
 				LOGWARNING("[FILEREAD] Reader is still alive after release for %s", pThis->m_Path.c_str());
-			
+
 			reqList.erase(pThis);
 			pThis->registResource();
 			pThis->m_WaitCount = 0;
@@ -129,7 +129,7 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 
 	Utils::formatPath(filepath);
 
-	if (*loaderStatus == 1 && stricmp(&filepath[strlen(filepath) - 4], ".usm") == 0)
+	if (*loaderStatus == 1 && strnicmp(&filepath[strlen(filepath) - 4], ".usm", strlen(filepath)) == 0)
 	{
 		if (true)
 		{
@@ -143,7 +143,7 @@ CREATE_HOOK(false, shared::base + 0xE9C0F6, int, __cdecl, CriFsFileLoad, int loa
 				if (!file)
 					continue; // We haven't found any file? Skip to the next profile
 
-				if (stricmp(filepath, file->m_path.c_str()) == 0)
+				if (strnicmp(filepath, file->m_path.c_str(), strlen(filepath)) == 0)
 					return original(loader);
 
 				LOGINFO("[CRIWARE] Found %s[%s] in %s", filepath, Utils::getProperSize(file->m_filesize).c_str(), prof->m_name.c_str());
@@ -197,36 +197,23 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 				return original(pThis, pFilePath, pReadAddr, buffSize, prio);
 			}
 			id = FileSystem::ReadAsync(file->m_path.c_str(), pData, file->m_filesize);
-			if (FileSystem::WaitForRead(id))
+
+			buffSize = file->m_filesize;
+			pThis->m_pReadAddr = pData;
+			pThis->m_Size = buffSize;
+			strcpy_s(pThis->m_pFilePath, pFilePath);
+			pThis->m_State = pThis->STATE_OPEN;
+			pThis->m_Prio = prio;
+		READER_CHECK_LABEL:
+			if (FileSystem::IsReaderAlive(id))
 			{
-				READER_CHECK_LABEL:
-				if (FileSystem::IsReadComplete(id))
-				{
-					// Hw::cHeap::free(pReadAddr);
-					pThis->m_pReadAddr = pData;
-					pThis->m_Size = file->m_filesize;
-
-					buffSize = file->m_filesize;
-
-					FileSystem::Release(id); // Release reader
-
-					Hw::DvdEnv::DebugUnregistReader(pThis);
-					Hw::DvdEnv::DebugEndCurrentReader(pThis);
-
-					return 1;
-				}
-				else
-				{
-					Hw::cHeap::free(pData);
-					LOGERROR("[DVDREAD] Could not read our modded file %s!", file->m_path.c_str());
-
-					return original(pThis, pFilePath, pReadAddr, buffSize, prio);
-				}
+				// Hw::cHeap::free(pReadAddr);
+				return 1;
 			}
 			else
 			{
-				Hw::cHeap::free(pData);
-				LOGERROR("[DVDREAD] Was the reader even requested? %s", file->m_path.c_str());
+				// Hw::cHeap::free(pData);
+				LOGERROR("[DVDREAD] Could not read our modded file %s!", file->m_path.c_str());
 
 				return original(pThis, pFilePath, pReadAddr, buffSize, prio);
 			}
@@ -234,6 +221,78 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 	}
 
 	return original(pThis, pFilePath, pReadAddr, buffSize, prio);
+}
+
+CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::cDvdReader*)
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
+		return original(pThis);
+
+	while (2)
+	{
+		FileSystem::eReadId reader = FileSystem::GetActiveReader(pThis->m_pFilePath);
+		if (reader == FileSystem::READID_INVALID)
+			return original(pThis);
+
+		bool updated = false;
+		switch (pThis->m_State)
+		{
+		case Hw::cDvdReader::STATE_OPEN:
+		{
+			if (reader != FileSystem::eReadId::READID_INVALID)
+			{
+				pThis->m_State = Hw::cDvdReader::STATE_READING;
+				Hw::DvdEnv::DebugSetCurrentReader(pThis);
+				updated = false; // break the sync loop
+			}
+			else
+			{
+				pThis->m_State = Hw::cDvdReader::STATE_ERROR;
+				LOGWARNING("[DVDREAD] Reader is invalid when it should be reading? Something went wrong with the read request for %s.", pThis->m_pFilePath);
+				updated = false;
+			}
+			break;
+		}
+		case Hw::cDvdReader::STATE_READING:
+		{
+			if (FileSystem::IsReadComplete(reader))
+			{
+				pThis->m_State = Hw::cDvdReader::STATE_COMPLETE;
+				FileSystem::Release(reader);
+
+				Hw::DvdEnv::DebugEndCurrentReader(pThis);
+				Hw::DvdEnv::DebugUnregistReader(pThis);
+
+				updated = false;
+			}
+			break;
+		}
+		case Hw::cDvdReader::STATE_CANCELING:
+		{
+			if (!FileSystem::IsReadComplete(reader))
+			{
+				FileSystem::Release(reader);
+				pThis->m_State = Hw::cDvdReader::STATE_CANCELED;
+
+				Hw::DvdEnv::DebugUnregistReader(pThis);
+				Hw::DvdEnv::DebugEndCurrentReader(pThis);
+
+				updated = false;
+				break;
+			}
+
+			pThis->m_State = pThis->STATE_ERROR;
+
+			break;
+		}
+		default:
+			return;
+		}
+
+		if (!updated)
+			return;
+	}
+	return original(pThis);
 }
 
 CREATE_THISCALL(false, shared::base + 0x9F1320, int, PgIoHookDeferredCRI_LoadSnd, char*, char* pData, char* pEnvData, char* pLoaderData)
@@ -286,35 +345,6 @@ CREATE_THISCALL(false, shared::base + 0xA9CBC0, void, FileRead_cWork_registerRes
 		}
 	}
 
-	return original(pThis);
-}
-
-CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::cDvdReader*)
-{
-	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
-		return original(pThis);
-
-	if (pThis->m_State == Hw::cDvdReader::STATE_COMPLETE)
-	{
-		if (pThis->m_pReadAddr && !strcmp((char*)pThis->m_pReadAddr, "DAT\0"))
-		{
-			Hw::cFmerge holder;
-			holder.m_data = (Hw::FmergeHeader*)pThis->m_pReadAddr;
-
-			Utils::String filepath = Utils::formatPath(pThis->m_pFilePath);
-			if (char* dot = filepath.strrchr('.'))
-				*dot = '_'; // change extension to prevent issues
-
-			size_t newSize = ReplaceDataArchiveFile(&holder, pThis->m_Size, filepath, Hw::HW_ALLOC_PHYSICAL_BACK);
-			if (newSize != 0 && newSize != -1)
-			{
-				LOGINFO("[DVDREAD] Replaced file %s in data archive with size %s", pThis->m_pFilePath, Utils::getProperSize(newSize).c_str());
-				pThis->m_Size = (unsigned int)newSize;
-				pThis->m_pReadAddr = holder.m_data;
-			}
-		}
-		return;
-	}
 	return original(pThis);
 }
 
@@ -375,22 +405,17 @@ CREATE_HOOK(false, shared::base + 0x5825B0, int, __cdecl, BindCpk)
 	return original();
 }
 
-DWORD fixDvdReadRequestExit = shared::base + 0x9EC18F + 8;
-void __declspec(naked) fixDvdReadRequest()
-{
-	__asm
-	{
-		mov ecx, [esp + 10h]
-		mov edx, [esp + 14h]
-		mov ebx, [esp + 70h]
-		mov edi, [esp + 74h]
-		jmp fixDvdReadRequestExit
-	}
-}
-
 void sHooks::Init()
 {
-	injector::MakeJMP(shared::base + 0x9EC18F, fixDvdReadRequest, true);
+	SafeHook::MakeNOP(shared::base + 0x9EC18F, 8); // NOP to clear the code, then use mid asm hook to set it on the fly
+	static SafeHook::MidAsmHook fixDvdReadRequestHook(shared::base + 0x9EC18F, [](SafeHook::CTX& ctx) -> void
+		{
+			ctx.ecx.i32 = ctx.esp().pi32[4];
+			ctx.edx.i32 = ctx.esp().pi32[5];
+			
+			ctx.ebx.i32 = ctx.esp().pi32[0x1C];
+			ctx.edi.i32 = ctx.esp().pi32[0x1D];
+		});
 }
 
 bool bDummy = (sHooks::Init(), true);

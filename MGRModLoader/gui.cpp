@@ -34,9 +34,7 @@ void gui::OnReset::After()
 
 void gui::OnEndScene()
 {
-	static bool init = false;
-
-	if (!init)
+	if (!bInit && !bShutdown)
 	{
 		oWndProc = (WNDPROC)::SetWindowLongPtr(Hw::OsWindow::m_MainWindow, GWLP_WNDPROC, (LONG)hkWindowProc);
 
@@ -46,7 +44,7 @@ void gui::OnEndScene()
 
 		gui::LoadStyle();
 
-		init = true;
+		bInit = true;
 	}
 
 	ImGui_ImplDX9_NewFrame();
@@ -57,6 +55,13 @@ void gui::OnEndScene()
 
 	ImGui::EndFrame();
 	ImGui::Render();
+}
+
+void gui::Render()
+{
+	if (bShutdown || !bInit)
+		return;
+
 	ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
 }
 
@@ -105,6 +110,18 @@ void gui::LoadStyle()
 	style.ScrollbarRounding = 0.0f;
 	style.WindowRounding = 0.0f;
 	style.TabRounding = 0.0f;
-	
+
 	// your style settings here
+}
+
+void gui::Shutdown()
+{
+	bShutdown = true;
+	bInit = false;
+
+	ImGui_ImplDX9_Shutdown();
+	ImGui_ImplWin32_Shutdown();
+	ImGui::DestroyContext();
+
+	oWndProc = (WNDPROC)::SetWindowLongPtr(Hw::OsWindow::m_MainWindow, GWLP_WNDPROC, (LONG)oWndProc); 
 }

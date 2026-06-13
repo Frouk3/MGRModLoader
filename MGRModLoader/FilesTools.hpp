@@ -18,7 +18,7 @@ namespace CriWare
 
 	inline Hw::cDvdCriFsBinder* getFreeBinderWork()
 	{
-		Hw::cDvdCriFsBinder* pWork = new(ModloaderHeap) Hw::cDvdCriFsBinder();
+		Hw::cDvdCriFsBinder* pWork = new(&ModloaderHeap) Hw::cDvdCriFsBinder();
 
 		if (!pWork)
 			return nullptr;
@@ -402,9 +402,12 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 	auto sanitizeDotsLower = [&](const char* s) -> Utils::String
 	{
 		Utils::String r = toLowerCopy(s);
-		for (char& c : r)
-			if (c == '.')
-				c = '_';
+
+		std::for_each(r.data(), r.data() + r.length(), [](char& c)
+			{
+				if (c == '.')
+					c = '_';
+			});
 		return r;
 	};
 
@@ -607,8 +610,8 @@ inline size_t ReplaceDataArchiveFile(Hw::cFmerge* holder, size_t holder_size, co
 
 	Utils::String path = Utils::String(ModLoader::ModLoaderPath) / "repacked";
 	Utils::String subDir = filename;
-	const char* begin = subDir.begin();
-	const char* end = subDir.end();
+	const char* begin = subDir.data();
+	const char* end = subDir.data() + subDir.length();
 
 	while (begin < end)
 	{

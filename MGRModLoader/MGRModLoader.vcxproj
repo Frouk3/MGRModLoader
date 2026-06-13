@@ -35,7 +35,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>DynamicLibrary</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v143</PlatformToolset>
+    <PlatformToolset>v145</PlatformToolset>
     <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>MultiByte</CharacterSet>
   </PropertyGroup>
@@ -73,6 +73,7 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <TargetExt>.asi</TargetExt>
     <IncludePath>F:\MEDIA\Документы\For projects\utils\IniReader;$(IncludePath)</IncludePath>
+    <SourcePath>$(SourcePath)</SourcePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -168,12 +169,15 @@
     <ClInclude Include="imgui\imstb_textedit.h" />
     <ClInclude Include="imgui\imstb_truetype.h" />
     <ClInclude Include="json.hpp" />
+    <ClInclude Include="licenses.h" />
     <ClInclude Include="ModLoader.h" />
     <ClInclude Include="ThreadWork.hpp" />
     <ClInclude Include="Timer.hpp" />
     <ClInclude Include="Utils.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\SDK\mgr-plugin-sdk\shared\hde\hde32.c" />
+    <ClCompile Include="..\..\..\SDK\mgr-plugin-sdk\shared\hde\hde64.c" />
     <ClCompile Include="dllmain.cpp" />
     <ClCompile Include="FileSystem.cpp" />
     <ClCompile Include="gui.cpp" />

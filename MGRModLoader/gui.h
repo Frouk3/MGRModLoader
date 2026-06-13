@@ -5,6 +5,9 @@
 
 namespace gui
 {
+	inline bool bInit = false;
+	inline bool bShutdown = false;
+
 	inline Hotkey GUIHotkey = Hotkey(Hw::KB_F2, Hw::KB_ALT_L, "GUIHotkey", nullptr, Hotkey::eHotkeyType(Hotkey::HT_TOGGLE));
 
 	void RenderWindow();
@@ -26,4 +29,6 @@ namespace gui
 	void LoadStyle();
 
 	void OnEndScene();
+	void Render();
+	void Shutdown();
 }

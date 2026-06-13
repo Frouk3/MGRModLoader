@@ -15,6 +15,7 @@ FileSystem::cReader::cReader()
 	m_filedata = nullptr;
 	m_buffersize = 0;
 	m_bufferpos = 0;
+	m_flags = 0;
 }
 
 FileSystem::cReader::cReader(const char* path, void* filedata, size_t buffersize)
@@ -24,6 +25,7 @@ FileSystem::cReader::cReader(const char* path, void* filedata, size_t buffersize
 	m_filedata = filedata;
 	m_buffersize = buffersize;
 	m_bufferpos = 0;
+	m_flags = 0;
 	open(path);
 }
 
@@ -193,7 +195,7 @@ bool FileSystem::cReader::isAlive() const
 
 void FileSystem::cReader::wait()
 {
-	for (; !isComplete() && !isCanceled(); )
+	for (; isAlive() && !isComplete() && !isCanceled(); )
 		move();
 }
 
@@ -479,14 +481,6 @@ bool FileSystem::Init(unsigned int maxReaders)
 
 void FileSystem::Shutdown()
 {
-	for (auto& reader : m_ReaderFactory)
-	{
-		reader.m_rno = cReader::MOVE_CLEANUP_START;
-		reader.wait();
-	}
-	UpdateReaders();
-	m_ReaderFactory.destroy();
-	m_ReaderFactoryCriticalSection.cleanup();
 	LOGINFO("Cleaning up reader threads...");
 	for (auto& thread : m_ReaderThreads)
 	{
@@ -494,8 +488,20 @@ void FileSystem::Shutdown()
 		TerminateThread(thread, 0);
 		CloseHandle(thread);
 	}
-	m_ReaderThreads.clear();
 	LOGINFO("Reader threads cleaned up.");
+
+	for (auto& reader : m_ReaderFactory)
+	{
+		if (reader.isAlive())
+		{
+			reader.m_rno = cReader::MOVE_CLEANUP_START;
+			reader.wait();
+		}
+	}
+	m_ReaderThreads.clear();
+	UpdateReaders();
+	m_ReaderFactory.destroy();
+	m_ReaderFactoryCriticalSection.cleanup();
 }
 
 void FileSystem::UpdateReaders()
@@ -729,7 +735,7 @@ FileSystem::eReadId FileSystem::GetActiveReader(const char* path)
 {
 	for (auto& r : m_ReaderFactory)
 	{
-		if (r.m_file.m_path == path && r.isAlive())
+		if (Utils::contains(r.m_file.m_path.c_str(), path) && r.isAlive())
 			return r.m_readId;
 	}
 	return READID_INVALID;

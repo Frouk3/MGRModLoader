@@ -1,7 +1,6 @@
 #include "ModLoader.h"
-#include <urlmon.h>
-#pragma comment(lib, "urlmon.lib")
 #include "ThreadWork.hpp"
+#include "Utils.h"
 
 void Updater::Init()
 {
@@ -14,67 +13,32 @@ bool CheckUpd()
 {
 	using namespace Updater;
 
-	bool result = false;
-	HRESULT hr;
-	const char* szURL = "https://github.com/Frouk3/ModMenuVersions/raw/refs/heads/main/MODLOADERVERSION.ini";
+	const char* szURL = "https://raw.githubusercontent.com/Frouk3/ModMenuVersions/main/MGRModLoader";
 
-	Utils::String tempPath(MAX_PATH);
-	GetTempPathA(MAX_PATH, tempPath.data());
-	tempPath.resize();
+	std::vector<char> data = Utils::FetchURL(szURL);
 
-	tempPath /= "MODLOADERVERSION.ini";
-
-	hr = URLDownloadToFileA(nullptr, szURL, tempPath.c_str(), 0, nullptr);
-	if (hr == S_OK)
+	if (data.empty())
 	{
-		char verBuf[16] = { 0 };
-		if (GetPrivateProfileStringA("Metal Gear Rising Revengeance", "VERSION", "-1.0", verBuf, sizeof(verBuf), tempPath.c_str()))
-		{
-			fLatestVersion = atof(verBuf);
-			if (fLatestVersion > fCurrentVersion)
-			{
-				eUpdateStatus = UPDATE_STATUS_AVAILABLE;
-				LOGINFO("New version available!: %s (You have %s)", Utils::FloatStringNoTralingZeros(fLatestVersion).c_str(), Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
-				result = true;
-			}
-			else if (fLatestVersion == -1.0)
-			{
-				eUpdateStatus = UPDATE_STATUS_FAILED;
-				LOGERROR("Failed to retrieve the latest version.");
-				result = false;
-			}
-			else
-			{
-				eUpdateStatus = UPDATE_STATUS_LATEST_INSTALLED;
-				LOGINFO("You have the latest version installed: %s", Utils::FloatStringNoTralingZeros(fCurrentVersion).c_str());
-				result = false;
-			}
-		}
-		else
-		{
-			eUpdateStatus = UPDATE_STATUS_FAILED;
-			LOGERROR("Failed to read the latest version from the update file.");
-			result = false;
-		}
+		eUpdateStatus = UPDATE_STATUS_NO_INTERNET;
+		LOGERROR("Failed to fetch update info. No internet connection?");
+		return false;
+	}
+
+	float fVersion = (float)atof(data.data());
+	fLatestVersion = fVersion;
+	if (fVersion > fCurrentVersion)
+	{
+		eUpdateStatus = UPDATE_STATUS_AVAILABLE;
+		LOGINFO("New version available: %s", Utils::FloatStringNoTralingZeros(fVersion));
+		return true;
 	}
 	else
 	{
-		if (hr == INET_E_DOWNLOAD_FAILURE)
-		{
-			eUpdateStatus = UPDATE_STATUS_NO_INTERNET;
-			LOGERROR("Unable to check for updates due to no internet connection?");
-		}
-		else
-		{
-			eUpdateStatus = UPDATE_STATUS_FAILED;
-			LOGERROR("Failed to download the update file. HRESULT: 0x%X", hr);
-		}
-		result = false;
+		eUpdateStatus = UPDATE_STATUS_LATEST_INSTALLED;
+		LOGINFO("Mod Loader is up to date.");
 	}
 
-	remove(tempPath.c_str());
-
-	return result;
+	return false;
 }
 
 bool Updater::CheckAsync()

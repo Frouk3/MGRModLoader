@@ -3,6 +3,7 @@
 #include <Windows.h>
 #include <vector>
 #include <process.h>
+#include "Utils.h"
 
 class cThread
 {
@@ -19,11 +20,11 @@ protected:
 	HANDLE m_hThread = nullptr;
 	DWORD m_ThreadId = 0;
 	size_t m_StackSize = 0x4000; // 16 KB
-	void(__cdecl* m_pThreadFunc)(cThread* pThread, LPVOID pParam) = nullptr;
+	void(__fastcall* m_pThreadFunc)(cThread* pThread, LPVOID pParam) = nullptr; // intentional calling convention of __fastcall to not mess with the stack
 	LPVOID m_pParam;
 public:
-	cThread(void(__cdecl* pThreadFunc)(cThread* pThread, LPVOID pParam), LPVOID pParam, bool start = true, size_t stackSize = 0x4000)
-		: m_pThreadFunc(pThreadFunc), m_pParam(pParam), m_StackSize(stackSize) 
+	cThread(void(__fastcall* pThreadFunc)(cThread* pThread, LPVOID pParam), LPVOID pParam, bool start = true, size_t stackSize = 0x4000)
+		: m_pThreadFunc(pThreadFunc), m_pParam(pParam), m_StackSize(stackSize)
 	{
 		if (start)
 			this->start();
@@ -41,12 +42,15 @@ public:
 	static unsigned int __stdcall ThreadProc(void* lpParameter)
 	{
 		cThread* pThread = (cThread*)lpParameter;
-		pThread->setRno(MOVE_RUNNING);
-		if (pThread && pThread->m_pThreadFunc)
-			pThread->m_pThreadFunc(pThread, pThread->m_pParam);
-		pThread->setRno(MOVE_END);
-		
-		OutputDebugStringA(Utils::format("Thread %04X exited with code 0.\n", pThread->m_ThreadId).c_str());
+		if (pThread)
+		{
+			pThread->setRno(MOVE_RUNNING);
+			if (pThread->m_pThreadFunc)
+				pThread->m_pThreadFunc(pThread, pThread->m_pParam);
+			pThread->setRno(MOVE_END);
+
+			OutputDebugStringA(Utils::format("Thread %04X exited with code 0.\n", pThread->m_ThreadId).c_str());
+		}
 
 		_endthreadex(0);
 
@@ -92,6 +96,11 @@ public:
 	static void AddThread(cThread* pThread)
 	{
 		m_ActiveThreads.push_back(pThread);
+	}
+
+	static void AddThread(void(__fastcall* pThreadFunc)(cThread* pThread, LPVOID pParam), LPVOID pParam, bool start = true, size_t stackSize = 0x4000)
+	{
+		AddThread(new cThread(pThreadFunc, pParam, start, stackSize));
 	}
 
 	static void UpdateThreads()
