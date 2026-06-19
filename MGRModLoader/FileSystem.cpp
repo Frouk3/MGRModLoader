@@ -735,7 +735,7 @@ FileSystem::eReadId FileSystem::GetActiveReader(const char* path)
 {
 	for (auto& r : m_ReaderFactory)
 	{
-		if (Utils::contains(r.m_file.m_path.c_str(), path) && r.isAlive())
+		if (r.isAlive() && Utils::contains(r.m_file.m_path.c_str(), path))
 			return r.m_readId;
 	}
 	return READID_INVALID;
