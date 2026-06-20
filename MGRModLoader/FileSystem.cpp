@@ -46,6 +46,7 @@ bool FileSystem::cReader::open(const char* path)
 	struct stat s;
 	if (stat(str.c_str(), &s) != 0)
 		return false;
+
 	m_file.m_filesize = (unsigned int)s.st_size;
 
 	if (!m_filedata) m_rno = MOVE_READ_ALLOC;
@@ -225,7 +226,8 @@ bool FileSystem::cReader::moveReadAlloc()
 
 bool FileSystem::cReader::moveReadStart()
 {
-	m_fp = fopen(m_file.m_path.c_str(), "rb");
+	m_fp = nullptr;
+	fopen_s(&m_fp, m_file.m_path.c_str(), "rb");
 	if (m_fp)
 	{
 		m_rno = MOVE_READ_WAIT;

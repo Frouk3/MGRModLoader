@@ -6,8 +6,13 @@ Utils::String ModLoader::GetModFolder()
 	return Utils::String(ModLoaderPath) / "mods" / "";
 }
 
+extern bool bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader;
+
 void ModLoader::Startup()
 {
+	if (bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader) // my favourite
+		return;
+
 	if (bInit)
 		return;
 
@@ -114,10 +119,10 @@ void ModLoader::Save(bool bSilent)
 	remove((GetModFolder() / "profiles.ini").c_str()); // Remove old profiles file, resolves issues with deleted mods
 
 	IniReader profilesIni((GetModFolder() / "profiles.ini").c_str());
-	FILE* f = nullptr;
-	f = fopen((GetModFolder() / "profiles.ini").c_str(), "a");
 
 	int profPlace = 0;
+
+	// formatting with new lines shouldn't really matter
 
 	for (ModProfile*& profile : ModLoader::Profiles)
 	{
@@ -125,15 +130,7 @@ void ModLoader::Save(bool bSilent)
 		profile->m_place = profPlace++;
 
 		profile->Save(profilesIni);
-
-		if (f)
-		{
-			fprintf(f, "\n");
-			fflush(f);
-		}
 	}
-
-	if (f) fclose(f);
 
 	if (!bSilent) LOGINFO("Save complete.");
 }

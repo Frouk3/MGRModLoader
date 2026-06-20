@@ -413,6 +413,8 @@ void DrawMiniExplorer()
 	ImGui::End();
 }
 
+bool bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader = false;
+
 class ModLoaderPlugin
 {
 public:
@@ -441,6 +443,42 @@ public:
 
 		ModloaderHeap.create(-1, "ModloaderHeap");
 		FileSystem::Init(64);
+
+		{
+			HANDLE hOpen = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, GetCurrentProcessId());
+			if (!hOpen)
+				return;
+
+			HMODULE hMods[1024];
+			DWORD cbNeeded;
+
+			if (EnumProcessModules(hOpen, hMods, sizeof(hMods), &cbNeeded)) // by doing it on EVERY module, another mod loader can't really hide
+			{
+				for (unsigned int i = 0; i < (cbNeeded / sizeof(HMODULE)); i++)
+				{
+					HMODULE hMod = hMods[i];
+					if (!hMod)
+						continue;
+
+					FARPROC addr = GetProcAddress(hMod, "GetModLoaderAPI");
+					if (addr)
+					{
+						LOG("What a pain.");
+						bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader = true; // lmao
+
+						LOGINFO("Dear user!");
+						LOGINFO("It seems like you have *tried* to load this Mod Loader with another Mod Loader. Is this really a thing?");
+						LOGINFO("I suggest you to refrain from modding, if you think that it is good idea to make this slop, it's not.");
+
+						// I won't tolerate or have further discussions about this, I cannot help either.
+
+						LOGINFO("The developer won't be able to help you with this *issue*.");
+
+						break;
+					}
+				}
+			}
+		}
 
 		ModLoader::Startup();
 		Updater::Init();
@@ -814,6 +852,12 @@ void gui::RenderWindow()
 			if (!ModLoader::bLoadMods)
 			{
 				ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "Mods are disabled from loading!");
+			}
+			else if (bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader)
+			{
+				ImGui::TextColored(ImVec4(1.f, 0.f, 0.f, 1.f), "Another mod loader is detected. I suggest you to stop what you're doing.");
+				ImGui::TextDisabled("(This is a joke, but seriously, use this mod loader if you want to use mods, other mod loaders are not supported and may cause issues)");
+				ImGui::TextDisabled("(Also, if you think that using another mod loader to load this mod loader is a good idea, you probably shouldn't be modding in the first place)");
 			}
 			else
 			{

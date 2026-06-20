@@ -4,6 +4,9 @@
 #include <map>
 #include <injector/injector.hpp>
 #include "FilesTools.hpp"
+#include "ThreadWork.hpp"
+
+extern bool bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader;
 
 CREATE_THISCALL(false, shared::base + 0xA9E170, int, FileRead_cWork_moveReadWait, FileRead::cWork*)
 {
@@ -161,6 +164,19 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
 		return original(pThis, pFilePath, pReadAddr, buffSize, prio);
 
+	auto sanitizeDots = [](const char* path) -> Utils::String
+		{
+			Utils::String copy(path);
+
+			std::for_each(copy.data(), copy.data() + copy.size(), [](char& c)
+				{
+					if (c == '.')
+						c = '_';
+				});
+
+			return copy;
+		};
+
 	for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
 	{
 		if (!prof->m_bEnabled)
@@ -218,6 +234,16 @@ CREATE_THISCALL(false, shared::base + 0x9EB160, BOOL, Hw_cDvdReader_read, Hw::cD
 				return original(pThis, pFilePath, pReadAddr, buffSize, prio);
 			}
 		}
+		else if (FileSystem::Directory* dir = prof->FindDirectory(sanitizeDots(pFilePath).c_str()); dir)
+		{
+			// our repack directory
+
+			pThis->m_State = (Hw::cDvdReader::STATE)7;
+			pThis->m_Prio = prio;
+			pThis->m_pReadAddr = pReadAddr;
+			strcpy_s(pThis->m_pFilePath, pFilePath);
+			return 1;
+		}
 	}
 
 	return original(pThis, pFilePath, pReadAddr, buffSize, prio);
@@ -234,7 +260,7 @@ CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::
 		if (reader == FileSystem::READID_INVALID)
 			return original(pThis);
 
-		bool updated = false;
+		bool updated = true;
 		switch (pThis->m_State)
 		{
 		case Hw::cDvdReader::STATE_OPEN:
@@ -282,7 +308,70 @@ CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::
 			}
 
 			pThis->m_State = pThis->STATE_ERROR;
+			updated = false;
 
+			break;
+		}
+		case 7: // state::repack_start
+		{
+			auto sanitizeDots = [](const char* path) -> Utils::String
+				{
+					Utils::String copy(path);
+
+					std::for_each(copy.data(), copy.data() + copy.size(), [](char& c)
+						{
+							if (c == '.')
+								c = '_';
+						});
+					return copy;
+				};
+
+			if (DataArchiveTools::isFmergeBuffer(pThis->m_pReadAddr, pThis->m_Size))
+			{
+				for (ModLoader::ModProfile*& prof : ModLoader::Profiles)
+				{
+					if (!prof->m_bEnabled)
+						continue;
+
+					if (FileSystem::Directory* dir = prof->FindDirectory(sanitizeDots(pThis->m_pFilePath).c_str()); dir)
+					{
+						ThreadWork::AddThread([](cThread*, LPVOID param)
+							{
+								Hw::cDvdReader* reader = (Hw::cDvdReader*)param;
+
+								Hw::cFmerge fmerge;
+								fmerge.setData((char*)reader->m_pReadAddr);
+
+								size_t size = ReplaceDataArchiveFile(&fmerge, reader->m_Size, reader->m_pFilePath, Hw::HW_ALLOC_PHYSICAL);
+								if (size != -1)
+								{
+									reader->m_Size = size;
+									reader->m_pReadAddr = fmerge.getData();
+									reader->m_State = (Hw::cDvdReader::STATE)9;
+								}
+								else
+								{
+									LOGERROR("[DVDREAD] Failed to repack %s!", reader->m_pFilePath);
+									reader->m_State = reader->STATE_ERROR;
+								}
+							}, pThis);
+						break;
+					}
+				}
+			}
+			updated = false;
+			pThis->m_State = (Hw::cDvdReader::STATE)8; // state::repack_wait
+			break;
+		}
+		case 8:
+		{
+			updated = false;
+			break;
+		}
+		case 9:
+		{
+			pThis->m_State = Hw::cDvdReader::STATE_COMPLETE;
+			updated = false;
 			break;
 		}
 		default:
@@ -292,6 +381,27 @@ CREATE_THISCALL(false, shared::base + 0x9EA800, void, Hw_cDvdReader_update, Hw::
 		if (!updated)
 			return;
 	}
+	return original(pThis);
+}
+
+CREATE_THISCALL(false, shared::base + 0x9E8610, int, Hw_cDvdReader_canClose, Hw::cDvdReader*) // solves `updateSync` problems
+{
+	if (!ModLoader::bInit || !ModLoader::bLoadFiles || !ModLoader::bLoadMods)
+		return original(pThis);
+
+	switch (pThis->m_State)
+	{
+	case Hw::cDvdReader::STATE_OPEN:
+	case Hw::cDvdReader::STATE_READING:
+	case Hw::cDvdReader::STATE_CANCELING:
+	case 7:
+	case 8:
+	case 9:
+		return 0;
+	default:
+		return 1;
+	}
+
 	return original(pThis);
 }
 
@@ -323,7 +433,7 @@ CREATE_THISCALL(false, shared::base + 0xA9CBC0, void, FileRead_cWork_registerRes
 	if (!ModLoader::bInit || !ModLoader::bLoadMods || !ModLoader::bLoadFiles)
 		return original(pThis); // jump into original
 
-	if (!strcmp((char*)pThis->m_pFileData, "DAT\0"))
+	if (DataArchiveTools::isFmergeBuffer(pThis->m_pFileData, pThis->m_NeedSize))
 	{
 		Hw::cFmerge backupDat = Hw::cFmerge((char*)pThis->m_pFileData);
 
@@ -407,6 +517,20 @@ CREATE_HOOK(false, shared::base + 0x5825B0, int, __cdecl, BindCpk)
 
 void sHooks::Init()
 {
+	if (bModLoaderForceDisableDueToInsultToAuthorByUsingAnotherModLoaderToLoadThisModLoader) // this is must a real joke by trying to load this modloader with another modloader, like what the actual fuck
+	{
+		Hook_BindCpk.Disable();
+		Hook_FileRead_cWork_registerResource.Disable();
+		Hook_PgIoHookDeferredCRI_LoadSnd.Disable();
+		Hook_Hw_cDvdReader_canClose.Disable();
+		Hook_CriFsFileLoad.Disable();
+		Hook_FileRead_cWork_moveReadWait.Disable();
+		Hook_getFileSize.Disable();
+		Hook_Hw_cDvdReader_read.Disable();
+		Hook_Hw_cDvdReader_update.Disable();
+		return;
+	}
+
 	SafeHook::MakeNOP(shared::base + 0x9EC18F, 8); // NOP to clear the code, then use mid asm hook to set it on the fly
 	static SafeHook::MidAsmHook fixDvdReadRequestHook(shared::base + 0x9EC18F, [](SafeHook::CTX& ctx) -> void
 		{

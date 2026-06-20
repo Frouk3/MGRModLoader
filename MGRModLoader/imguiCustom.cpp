@@ -3,50 +3,46 @@
 
 #include "Utils.h"
 
-#pragma warning(push)
-
-#pragma warning(disable : 4996)
-
 bool ImGui::InputText(const char* label, Utils::String& buf, unsigned int flags)
 {
-	static char buffer[1024];
+	if (buf.empty())
+		buf = "";
 
-	buffer[0] = '\0';
+	bool result = ImGui::InputText(label, buf.data(), buf.capacity() + 1, flags | ImGuiInputTextFlags_CallbackResize, [](ImGuiInputTextCallbackData* data) -> int
+		{
+			if (data->EventFlag != ImGuiInputTextFlags_CallbackResize)
+				return 0;
 
-	if (buf.data())
-		strcpy(buffer, buf.c_str());
-	bool result = ImGui::InputText(label, buffer, sizeof(buffer), flags);
-	if (result)
-		buf.reserve(strlen(buffer) + 1);
+			Utils::String* str = (Utils::String*)data->UserData;
 
-	if (buf.data() && result)
-	{
-		strcpy(buf.data(), buffer);
-		buf.resize();
-	}
+			str->reserve(data->BufSize);
+			data->Buf = str->data();
+			data->BufSize = (int)str->capacity() + 1;
+
+			return 0;
+		}, &buf);
 
 	return result;
 }
 
 bool ImGui::InputTextMultiline(const char* label, Utils::String& buf, unsigned int flags)
 {
-	static char buffer[1024];
+	if (buf.empty())
+		buf = "";
 
-	buffer[0] = '\0';
+	bool result = ImGui::InputTextMultiline(label, buf.data(), buf.capacity() + 1, ImVec2(0, 0), flags | ImGuiInputTextFlags_CallbackResize, [](ImGuiInputTextCallbackData* data) -> int
+		{
+			if (data->EventFlag != ImGuiInputTextFlags_CallbackResize)
+				return 0;
 
-	if (buf.data())
-		strcpy(buffer, buf.c_str());
-	bool result = ImGui::InputTextMultiline(label, buffer, sizeof(buffer));
-	if (result)
-		buf.reserve(strlen(buffer) + 1);
+			Utils::String* str = (Utils::String*)data->UserData;
 
-	if (buf.data() && result)
-	{
-		strcpy(buf.data(), buffer);
-		buf.resize();
-	}
+			str->reserve(data->BufSize);
+			data->Buf = str->data();
+			data->BufSize = (int)str->capacity() + 1;
+
+			return 0;
+		}, &buf);
 
 	return result;
 }
-
-#pragma warning(pop)

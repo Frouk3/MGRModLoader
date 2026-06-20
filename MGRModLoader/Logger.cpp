@@ -50,7 +50,8 @@ void Logger::SaveConfig()
 
 void Logger::Open()
 {
-	LogFile = fopen(LogFilePath, "w"); // using safe version will prevent you from opening files from explorer, apparently
+	LogFile = nullptr;
+	fopen_s(&LogFile, LogFilePath, "w");
 	assert(LogFile != nullptr);
 }
 
@@ -65,7 +66,9 @@ void Logger::Close()
 
 void Logger::ReOpen()
 {
-	LogFile = freopen(LogFilePath, "w", LogFile);
+	LogFile = nullptr;
+	freopen_s(&LogFile, LogFilePath, "w", LogFile);
+	assert(LogFile != nullptr);
 }
 
 void Logger::SetPath(const char* path)

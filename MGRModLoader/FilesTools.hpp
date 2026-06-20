@@ -114,13 +114,15 @@ namespace DataArchiveTools
 	{
 		if (!data || size < 4)
 			return false;
+
 		const unsigned char* p = (const unsigned char*)data;
 		return (p[0] == 'D' && p[1] == 'A' && p[2] == 'T' && p[3] == 0);
 	}
 
 	inline int rebuildFmerge(std::vector<FileStructure>& files, const char *whereToSave)
 	{
-		FILE* pFile = fopen(whereToSave, "wb");
+		FILE* pFile = nullptr;
+		fopen_s(&pFile, whereToSave, "wb");
 		if (!pFile)
 			return 1;
 
